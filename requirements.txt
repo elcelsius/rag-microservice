@@ -13,6 +13,9 @@ numpy==1.26.4
 # Biblioteca da API do Google Gemini
 google-generativeai
 
+# Micro-framework para criar a API
+Flask
+
 # Loaders de Documentos
 pypdf
 python-docx

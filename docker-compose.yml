@@ -24,8 +24,31 @@ services:
     env_file:
       - .env
     volumes:
-      # --- LINHA ADICIONADA ---
-      # Espelha o código local para dentro do container em tempo real
+      - .:/app
+      - ./data:/app/data
+      - ./vector_store:/app/vector_store
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+  # SERVIÇO DA API DE IA
+  ai_api:
+    build: .
+    container_name: ai_projeto_api
+    depends_on:
+      - postgres
+    env_file:
+      - .env
+    # --- COMANDO CORRIGIDO E MAIS ROBUSTO ---
+    # Diz explicitamente ao Flask para usar o arquivo 'api.py'
+    command: flask --app api.py run --host=0.0.0.0 --port=5000
+    ports:
+      - "5000:5000"
+    volumes:
       - .:/app
       - ./data:/app/data
       - ./vector_store:/app/vector_store
