@@ -15,11 +15,14 @@ google-generativeai
 
 # Micro-framework para criar a API
 Flask
+Flask-Cors
 
 # Loaders de Documentos
 pypdf
 python-docx
 unstructured[md]
+unstructured[pdf]
+pikepdf  
 
 # Banco de Dados e Configuração
 psycopg2-binary

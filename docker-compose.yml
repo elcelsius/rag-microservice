@@ -1,3 +1,4 @@
+# docker-compose.yml (CORRIGIDO)
 services:
   postgres:
     image: postgres:15
@@ -6,10 +7,11 @@ services:
     env_file:
       - .env
     ports:
-      - "5432:5432"
+      - "5433:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
+      # --- CORREÇÃO APLICADA AQUI ---
       test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
       interval: 10s
       timeout: 5s
@@ -35,7 +37,6 @@ services:
               count: 1
               capabilities: [gpu]
 
-  # SERVIÇO DA API DE IA
   ai_api:
     build: .
     container_name: ai_projeto_api
@@ -43,8 +44,6 @@ services:
       - postgres
     env_file:
       - .env
-    # --- COMANDO CORRIGIDO E MAIS ROBUSTO ---
-    # Diz explicitamente ao Flask para usar o arquivo 'api.py'
     command: flask --app api.py run --host=0.0.0.0 --port=5000
     ports:
       - "5000:5000"
@@ -60,5 +59,16 @@ services:
               count: 1
               capabilities: [gpu]
 
+  web_ui:
+    image: nginx:alpine
+    container_name: ai_web_ui
+    ports:
+      - "8080:80"
+    volumes:
+      - ./web_ui:/usr/share/nginx/html
+      - ./web_ui/nginx.default.conf:/etc/nginx/conf.d/default.conf:ro   # << ADICIONE ESTA LINHA
+    depends_on:
+      - ai_api
+  
 volumes:
   postgres_data:

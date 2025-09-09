@@ -3,10 +3,12 @@ import os
 import torch
 import faiss
 from flask import Flask, request, jsonify
+from flask_cors import CORS 
 from langchain_huggingface import HuggingFaceEmbeddings
 from query_handler import find_answer_for_query # Importamos nossa lógica
 
 app = Flask(__name__)
+CORS(app) 
 
 # --- CARREGAMENTO DOS MODELOS (FEITO UMA SÓ VEZ) ---
 # Para alta performance, carregamos os modelos na memória quando a API inicia.
