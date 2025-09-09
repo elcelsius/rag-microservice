@@ -1,11 +1,13 @@
+# app/etl_orchestrator.py (COM LIMPEZA DE DADOS)
+
 import os
-import torch  # Importamos o torch
+import torch
 import psycopg2
+import re
 from dotenv import load_dotenv
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_community.vectorstores import FAISS
-
 from loaders import pdf_loader, docx_loader, txt_loader, md_loader, code_loader
 
 load_dotenv()
@@ -14,7 +16,7 @@ load_dotenv()
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 print(f"--- Usando dispositivo: {DEVICE} ---")
 
-# --- CONFIGURAÇÕES GERAIS ---
+# --- CONFIGURAções GERAIS ---
 DATA_PATH = os.getenv("DATA_PATH_CONTAINER", "data/")
 VECTOR_STORE_PATH = "vector_store/faiss_index"
 DB_HOST = os.getenv("POSTGRES_HOST", "postgres")
@@ -53,6 +55,53 @@ def setup_database():
         print(f"ERROR: Não foi possível configurar o banco de dados: {e}")
         raise
 
+# --- NOVA FUNÇÃO DE LIMPEZA ---
+def clean_document_content(docs):
+    cleaned_docs = []
+    # Padrões de texto de ruído para remover (use regex para mais flexibilidade)
+    patterns_to_remove = [
+        r"Carregando\.\.\.",
+        r"Navegar para",
+        r"Acesso rápido",
+        r"Ir para o item anterior",
+        r"Ir par ao próximo item",
+        r"Ir ao item número \d+",
+        r"PÁGINA ATUAL:.*",
+        r"Plugin de acessibilidade da Hand Talk",
+        r"Acessível em Libras",
+        r"Recursos Assistivos",
+        r"FUNDAÇÕES",
+        r"GOVERNO",
+        r"SISTEMAS",
+        r"SAÚDE",
+        r"Editora Unesp",
+        r"Fundunesp",
+        r"Fundação Vunesp",
+        r"Governo de São Paulo",
+        r"Conselho de Reitores",
+        r"Transparência Unesp",
+        # Remove linhas com apenas uma palavra curta (geralmente links de menu)
+        r"^\s*\b\w{1,10}\b\s*$",
+    ]
+    
+    # Compila os padrões regex para eficiência
+    compiled_patterns = [re.compile(p, re.IGNORECASE) for p in patterns_to_remove]
+
+    for doc in docs:
+        content = doc.page_content
+        # Aplica cada padrão de remoção
+        for pattern in compiled_patterns:
+            content = pattern.sub("", content)
+        
+        # Remove linhas em branco excessivas
+        content = re.sub(r'\n\s*\n', '\n', content)
+        
+        doc.page_content = content
+        if len(content) > 50: # Apenas adiciona documentos que ainda têm conteúdo substancial
+            cleaned_docs.append(doc)
+            
+    return cleaned_docs
+
 def process_documents():
     all_docs_from_loaders = []
     print(f"\nINFO: Iniciando varredura recursiva de documentos em '{DATA_PATH}'...")
@@ -69,19 +118,25 @@ def process_documents():
                     print(f"ERROR: Falha ao carregar o arquivo {filename}: {e}")
 
     if not all_docs_from_loaders:
-        print("ERROR: Nenhum documento foi carregado. Encerrando.")
+        print("WARNING: Nenhum documento foi carregado. A base de conhecimento ficará vazia.")
         return
 
-    print(f"\nINFO: {len(all_docs_from_loaders)} páginas/documentos carregados. Iniciando o 'chunking'...")
+    print(f"\nINFO: {len(all_docs_from_loaders)} páginas/documentos carregados. Iniciando a limpeza do conteúdo...")
+    # --- APLICA A LIMPEZA AQUI ---
+    cleaned_docs = clean_document_content(all_docs_from_loaders)
+    print(f"SUCCESS: Documentos limpos. Restaram {len(cleaned_docs)} documentos com conteúdo relevante.")
+
+
+    print(f"\nINFO: Iniciando o 'chunking' dos documentos limpos...")
     text_splitter = RecursiveCharacterTextSplitter(chunk_size=1200, chunk_overlap=200)
-    split_chunks = text_splitter.split_documents(all_docs_from_loaders)
+    split_chunks = text_splitter.split_documents(cleaned_docs)
     print(f"SUCCESS: Documentos divididos em {len(split_chunks)} chunks.")
 
+    # O resto do código permanece o mesmo...
     print("\nINFO: Iniciando a geração de embeddings...")
-    # --- MUDANÇA PRINCIPAL: Instruindo o modelo a usar a GPU ---
     embeddings_model = HuggingFaceEmbeddings(
         model_name="all-MiniLM-L6-v2",
-        model_kwargs={'device': DEVICE}  # Define o dispositivo (cuda ou cpu)
+        model_kwargs={'device': DEVICE}
     )
 
     vector_store = FAISS.from_documents(split_chunks, embeddings_model)
@@ -96,7 +151,7 @@ def process_documents():
         cur.execute("TRUNCATE TABLE document_chunks RESTART IDENTITY;")
         for i, doc in enumerate(split_chunks):
             source = doc.metadata.get('source', 'desconhecido')
-            content = doc.page_content
+            content = doc.page_content.replace('\x00', '')
             cur.execute(
                 "INSERT INTO document_chunks (source_file, chunk_text, faiss_index) VALUES (%s, %s, %s)",
                 (source, content, i)

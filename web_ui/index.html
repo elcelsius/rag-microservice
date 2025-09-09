@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>IA Compilot | Chat</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="chat-widget">
+        <header class="chat-header">
+            <div class="header-content">
+                <img src="logo_final.png" alt="Logo IA Compilot" class="chat-logo-header">
+                <div class="header-text-container">
+                    <h2>IA Compilot</h2>
+                    <p>UNESP | Faculdade de Ciências</p>
+                </div>
+            </div>
+        </header>
+
+        <main id="chat-box" class="chat-box">
+            <div class="message ai-message">
+                <div class="text">Olá! Como posso te ajudar hoje?</div>
+            </div>
+        </main>
+
+        <footer class="chat-input-area">
+            <form id="chat-form">
+                <input type="text" id="user-input" placeholder="Digite sua mensagem..." autocomplete="off" required>
+                <button type="submit" id="send-btn">
+                    <svg viewBox="0 0 24 24" fill="white" width="24px" height="24px"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
+                </button>
+            </form>
+        </footer>
+    </div>
+
+    <script src="script.js"></script>
+</body>
+</html>
