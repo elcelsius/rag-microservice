@@ -1,0 +1,13 @@
+# Este arquivo substitui configurações do docker-compose.yml principal para rodar em modo CPU.
+services:
+  etl:
+    build:
+      context: .
+      dockerfile: Dockerfile.cpu # Usa o Dockerfile de CPU
+    deploy: null # Remove a reserva de GPU
+
+  ai_api:
+    build:
+      context: .
+      dockerfile: Dockerfile.cpu # Usa o Dockerfile de CPU
+    deploy: null # Remove a reserva de GPU

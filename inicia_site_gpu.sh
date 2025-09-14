@@ -23,7 +23,7 @@ echo "✅ Servidor web está no ar!"
 echo "🌐 Abrindo o site no seu navegador padrão..."
 
 # Comando para abrir a URL no navegador padrão do Windows a partir do WSL2.
-explorer.exe http://localhost:8080
+explorer.exe
 
 # Para outros sistemas operacionais (deixar comentado):
 # No macOS: open http://localhost:8080

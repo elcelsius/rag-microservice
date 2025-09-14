@@ -1,0 +1,17 @@
+# Passo 1: Usar uma imagem oficial e leve de Python
+FROM python:3.11-slim
+
+# Define o diretório de trabalho padrão
+WORKDIR /app
+
+# Copia o arquivo de dependências específico para CPU
+COPY requirements-cpu.txt ./requirements-cpu.txt
+
+# Instala as dependências usando pip, referenciando o arquivo pelo nome correto
+RUN pip3 install --no-cache-dir -r requirements-cpu.txt
+
+# Copia todo o resto do código do projeto
+COPY . .
+
+# Comando padrão (não será usado pelo 'ai_api', mas é uma boa prática)
+CMD ["python3", "etl_orchestrator.py"]

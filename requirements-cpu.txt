@@ -5,7 +5,7 @@ langchain-community
 langchain-huggingface
 langchain-google-genai
 sentence-transformers
-faiss-gpu
+faiss-cpu
 torch
 langgraph
 

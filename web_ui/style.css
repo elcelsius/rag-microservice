@@ -220,3 +220,37 @@ body {
 #send-btn:hover {
     background-color: var(--secondary-color);
 }
+
+/* --- ESTILOS PARA CITAÇÕES --- */
+.citations {
+    margin-top: 15px;
+    padding-top: 10px;
+    border-top: 1px solid #e0e0e0;
+}
+
+.citations h4 {
+    margin: 0 0 8px 0;
+    font-size: 0.8rem;
+    color: #555;
+    font-weight: 600;
+}
+
+.citation {
+    margin-bottom: 8px;
+}
+
+.citation-source {
+    font-size: 0.75rem;
+    font-weight: bold;
+    color: var(--primary-color);
+    margin: 0;
+}
+
+.citation-snippet {
+    font-size: 0.75rem;
+    color: #666;
+    margin: 2px 0 0 0;
+    font-style: italic;
+    white-space: pre-wrap; /* Mantém a formatação do texto do trecho */
+    word-break: break-word;
+}

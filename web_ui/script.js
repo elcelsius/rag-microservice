@@ -9,15 +9,12 @@ document.addEventListener('DOMContentLoaded', () => {
         const question = userInput.value.trim();
         if (!question) return;
 
-        // Adiciona a mensagem do usuário à tela
-        appendMessage(question, 'user');
+        appendUserMessage(question);
         userInput.value = '';
 
-        // Mostra o indicador de "digitando"
         const typingIndicator = showTypingIndicator();
 
         try {
-            // Faz a chamada para a nossa API backend
             const response = await fetch('/query', {
                 method: 'POST',
                 headers: {
@@ -26,7 +23,6 @@ document.addEventListener('DOMContentLoaded', () => {
                 body: JSON.stringify({ question: question })
             });
 
-            // Remove o indicador de "digitando"
             typingIndicator.remove();
 
             if (!response.ok) {
@@ -34,32 +30,62 @@ document.addEventListener('DOMContentLoaded', () => {
             }
 
             const data = await response.json();
-            // Adiciona a resposta da IA à tela
-            appendMessage(data.answer, 'ai');
+            appendAiMessage(data); // Passa o objeto de dados completo
 
         } catch (error) {
             console.error('Falha ao buscar resposta:', error);
-            appendMessage('Desculpe, não consegui me conectar ao meu cérebro. Tente novamente mais tarde.', 'ai');
+            appendAiMessage({ answer: 'Desculpe, não consegui me conectar ao meu cérebro. Tente novamente mais tarde.' });
         }
     });
 
-    function appendMessage(text, sender) {
+    function appendUserMessage(text) {
         const messageDiv = document.createElement('div');
-        messageDiv.classList.add('message', `${sender}-message`);
+        messageDiv.classList.add('message', 'user-message');
 
-        const avatarDiv = document.createElement('div');
-        avatarDiv.classList.add('avatar');
-        avatarDiv.textContent = sender === 'user' ? 'Você' : 'IA';
+        messageDiv.innerHTML = `
+            <div class="text">${text}</div>
+            <div class="avatar">Você</div>
+        `;
+        chatBox.appendChild(messageDiv);
+        chatBox.scrollTop = chatBox.scrollHeight;
+    }
+
+    function appendAiMessage(data) {
+        const messageDiv = document.createElement('div');
+        messageDiv.classList.add('message', 'ai-message');
 
         const textDiv = document.createElement('div');
         textDiv.classList.add('text');
-        textDiv.textContent = text;
+        textDiv.textContent = data.answer;
+
+        // Lógica para adicionar citações
+        if (data.citations && data.citations.length > 0) {
+            const citationsContainer = document.createElement('div');
+            citationsContainer.classList.add('citations');
+
+            const title = document.createElement('h4');
+            title.textContent = 'Fontes Consultadas:';
+            citationsContainer.appendChild(title);
+
+            data.citations.forEach(citation => {
+                const citationDiv = document.createElement('div');
+                citationDiv.classList.add('citation');
+                citationDiv.innerHTML = `
+                    <p class="citation-source">${citation.documento}</p>
+                    <p class="citation-snippet">"...${citation.trecho}..."</p>
+                `;
+                citationsContainer.appendChild(citationDiv);
+            });
+            textDiv.appendChild(citationsContainer);
+        }
+
+        const avatarDiv = document.createElement('div');
+        avatarDiv.classList.add('avatar');
+        avatarDiv.textContent = 'IA';
 
         messageDiv.appendChild(avatarDiv);
         messageDiv.appendChild(textDiv);
         chatBox.appendChild(messageDiv);
-
-        // Rola para a mensagem mais recente
         chatBox.scrollTop = chatBox.scrollHeight;
     }
 
