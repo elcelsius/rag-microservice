@@ -22,6 +22,9 @@ def handle_query():
     # Invoca o agente com a pergunta do usuário
     final_state = compiled_graph.invoke({"pergunta": question})
 
+    # Imprime o estado final do agente para depuração
+    print(f"DEBUG: Estado final do agente -> {final_state}")
+
     # Prepara a resposta final a partir do estado do agente
     response_data = {
         "answer": final_state.get("resposta", "Ocorreu um erro ao processar sua solicitação."),

@@ -4,6 +4,7 @@ langchain-core
 langchain-community
 langchain-huggingface
 langchain-google-genai
+google-generativeai
 sentence-transformers
 faiss-gpu
 torch
@@ -24,7 +25,7 @@ pypdf
 python-docx
 unstructured[md]
 unstructured[pdf]
-pikepdf  
+pikepdf
 
 # Banco de Dados e Configuração
 psycopg2-binary

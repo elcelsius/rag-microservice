@@ -87,7 +87,14 @@ def process_and_embed_documents(docs_to_process, embeddings_model):
         return None, None
 
     print(f"INFO: {len(docs_to_process)} documentos serão processados.")
-    text_splitter = RecursiveCharacterTextSplitter(chunk_size=1200, chunk_overlap=200)
+    # Adicionamos separadores que são comuns entre registros (duas quebras de linha)
+    # Isso incentiva o splitter a criar chunks mais coesos para cada docente.
+    text_splitter = RecursiveCharacterTextSplitter(
+        chunk_size=1200,
+        chunk_overlap=200,
+        separators=["\n\n", "\n", " ", ""] # Adicionando separadores
+    )
+    # --- FIM DA MODIFICAÇÃO -
     split_chunks = text_splitter.split_documents(docs_to_process)
     print(f"SUCCESS: Documentos divididos em {len(split_chunks)} chunks.")
 

@@ -86,11 +86,24 @@ def find_answer_for_query(query_text: str, top_k: int = 5) -> dict:
     """
     Executa o pipeline RAG e RETORNA um dicionário com a resposta, citações e status.
     """
+    # --- DEBUG AGENTE: Imprime a pergunta exata que o RAG recebeu ---
+    print(f"\n\n\n--- DEBUG RAG: RECEBIDA PERGUNTA PARA BUSCA ---")
+    print(f"Query: '{query_text}'")
+    # --- FIM DEBUG ---
+
     query_embedding = embeddings_model.embed_query(query_text)
     query_vector = np.array([query_embedding], dtype=np.float32)
 
     try:
         distances, ids = index.search(query_vector, top_k)
+
+        # --- DEBUG RAG: Mostra os resultados brutos da busca vetorial ---
+        print("\n--- DEBUG RAG: PASSO 1 - BUSCA FAISS BRUTA ---")
+        print(f"Distâncias (scores) encontradas: {distances[0]}")
+        print(f"Índices (IDs) dos chunks encontrados: {ids[0]}")
+        print("(Lembre-se: score mais baixo = mais relevante)")
+        # --- FIM DEBUG ---
+
     except Exception as e:
         print(f"ERRO: Falha na busca do FAISS: {e}")
         return {
@@ -99,20 +112,27 @@ def find_answer_for_query(query_text: str, top_k: int = 5) -> dict:
             "context_found": False
         }
 
-    # --- LÓGICA DE FILTRO POR THRESHOLD DE CONFIANÇA ---
     faiss_indices = []
     if ids.any() and ids[0][0] != -1:
-        # Filtra os resultados, mantendo apenas aqueles cujo score (distância) é MENOR que o threshold
         filtered_results = [
             (int(i), d) for i, d in zip(ids[0], distances[0])
             if i != -1 and d < FAISS_SCORE_THRESHOLD
         ]
 
+        # --- DEBUG RAG: Mostra o que passou pelo filtro de confiança ---
+        print("\n--- DEBUG RAG: PASSO 2 - FILTRO DE THRESHOLD ---")
+        print(f"Threshold de score definido no .env: {FAISS_SCORE_THRESHOLD}")
+        print(f"Resultados que passaram no filtro (índice, score): {filtered_results}")
+        # --- FIM DEBUG ---
+
         if filtered_results:
             faiss_indices = tuple(res[0] for res in filtered_results)
 
-    # --- VERIFICAÇÃO UNIFICADA DE FALHA ---
     if not faiss_indices:
+        # --- DEBUG RAG: Informa que a busca não retornou nada após o filtro ---
+        print(
+            "\n--- DEBUG RAG: Nenhum documento relevante encontrado após filtro. O contexto para o LLM estará VAZIO. ---")
+        # --- FIM DEBUG ---
         print(
             f"--- RAG: Nenhum documento relevante encontrado após filtro de score (threshold: {FAISS_SCORE_THRESHOLD}) ---")
         return {
@@ -121,7 +141,7 @@ def find_answer_for_query(query_text: str, top_k: int = 5) -> dict:
             "context_found": False
         }
 
-    print(f"--- RAG: {len(faiss_indices)} documentos encontrados dentro do threshold de score. ---")
+    print(f"\n--- DEBUG RAG: {len(faiss_indices)} documento(s) recuperado(s) do banco de dados. ---")
 
     conn = get_db_connection()
     cur = conn.cursor()
@@ -132,6 +152,14 @@ def find_answer_for_query(query_text: str, top_k: int = 5) -> dict:
     conn.close()
 
     context_text = "\n\n".join([f"Trecho do arquivo {row[0]}:\n{row[1]}" for row in results])
+
+    # --- DEBUG RAG: Mostra o contexto exato que será enviado para o Gemini ---
+    print("\n--- DEBUG RAG: PASSO 3 - CONTEXTO FINAL ENVIADO AO LLM ---")
+    print("===================== INÍCIO DO CONTEXTO =====================")
+    print(context_text)
+    print("====================== FIM DO CONTEXTO =======================")
+    # --- FIM DEBUG ---
+
     final_answer = generate_answer(context_text, query_text)
     citations = _formatar_citacoes(results, query_text)
 

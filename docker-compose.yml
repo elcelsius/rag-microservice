@@ -44,6 +44,8 @@ services:
       - postgres
     env_file:
       - .env
+    environment:
+      - PYTHONUNBUFFERED=1
     command: flask --app api.py run --host=0.0.0.0 --port=5000
     ports:
       - "5000:5000"
