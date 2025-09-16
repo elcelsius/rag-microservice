@@ -1,36 +1,36 @@
-# Core de IA e Embeddings
-langchain
-langchain-core
-langchain-community
-langchain-huggingface
-langchain-google-genai
-google-generativeai
-sentence-transformers
-faiss-gpu
-torch
-langgraph
-rapidfuzz         # fuzzy matching leve pra nomes
+flask==3.0.3
+flask-cors==4.0.1
+python-dotenv==1.0.1
 
+# LangChain (versões compatíveis entre si)
+langchain-community==0.2.10
+langchain-core==0.2.43
+langchain-text-splitters==0.2.4
 
-# Pinamos a versão do NumPy para garantir compatibilidade com faiss-gpu
+# Embeddings (API + ETL usam o mesmo modelo)
+sentence-transformers==2.2.2
+huggingface-hub==0.24.6
+transformers==4.48.3
+
+# Vetores / similaridade
+faiss-cpu==1.7.4
+rapidfuzz==3.9.7
 numpy==1.26.4
+torch==2.8.0
 
-# Biblioteca da API do Google Gemini
-google-generativeai
+# PDF
+pypdf==4.2.0
 
-# Micro-framework para criar a API
-Flask
-Flask-Cors
+# Gemini (SDK estável)
+google-generativeai>=0.7.2,<0.8
 
-# Loaders de Documentos
-pypdf
-python-docx
-unstructured[md]
-unstructured[pdf]
-pikepdf
+# utilidades
+orjson==3.11.3
+requests==2.32.5
+tenacity==8.5.0
+SQLAlchemy==2.0.43
+aiohttp==3.12.15
+dataclasses-json==0.6.7
 
-# Banco de Dados e Configuração
-psycopg2-binary
-python-dotenv
-sqlalchemy
-
+# NLTK (seu pipeline usa)
+nltk==3.9.1

@@ -1,38 +1,33 @@
 # api.py
 from __future__ import annotations
-
-import os
+import os, time, uuid, json
+from collections import Counter
 from flask import Flask, request, jsonify
-
-# LangChain/FAISS
 from langchain_community.vectorstores import FAISS
 from langchain_community.embeddings import HuggingFaceEmbeddings
-
-# Seu pipeline de resposta (já integrado aos prompts via llm_client no query_handler)
 from query_handler import answer_question
 
-# Para verificar se o LLM está configurado/pronto
 try:
-    from llm_client import _lazy_client as _llm_lazy_client  # type: ignore
+    from llm_client import _lazy_client as _llm_lazy_client
 except Exception:
     _llm_lazy_client = None
 
-# ------------------------------------------------------------------------------
-# Readiness flags
-# ------------------------------------------------------------------------------
+# Readiness
 APP_READY = False
 FAISS_OK = False
 LLM_OK = False
-REQUIRE_LLM_READY = os.getenv("REQUIRE_LLM_READY", "false").lower() in ("1", "true", "yes")
+REQUIRE_LLM_READY = os.getenv("REQUIRE_LLM_READY", "false").lower() in ("1","true","yes")
 
-# ------------------------------------------------------------------------------
-# Flask app
-# ------------------------------------------------------------------------------
+# Config
+FAISS_STORE_DIR = os.getenv("FAISS_STORE_DIR", "/app/vector_store/faiss_index")
+EMBEDDINGS_MODEL = os.getenv("EMBEDDINGS_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
+
+# Metrics (simples)
+METRICS = Counter()
+START_TS = time.time()
+
 app = Flask(__name__)
 
-# ------------------------------------------------------------------------------
-# Utilidades de prontidão
-# ------------------------------------------------------------------------------
 def _probe_faiss(vs) -> bool:
     try:
         all_docs = list(getattr(vs.docstore, "_dict", {}).values())
@@ -45,7 +40,6 @@ def _probe_llm() -> bool:
         return False
     try:
         provider, _ = _llm_lazy_client()
-        # nomes usados no llm_client.py unificado (google/openai) – ok se não houver nenhum
         return provider in ("google", "openai")
     except Exception:
         return False
@@ -57,35 +51,22 @@ def _update_readiness(vs=None):
     LLM_OK = _probe_llm()
     APP_READY = FAISS_OK and (LLM_OK if REQUIRE_LLM_READY else True)
 
-# ------------------------------------------------------------------------------
-# Carregamento do índice FAISS + embeddings
-# ------------------------------------------------------------------------------
-FAISS_STORE_DIR = os.getenv("FAISS_STORE_DIR", "/app/vector_store/faiss_index")
-EMBEDDINGS_MODEL = os.getenv("EMBEDDINGS_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
-
 embeddings_model = None
 vectorstore = None
 
 try:
-    # Embeddings
     embeddings_model = HuggingFaceEmbeddings(model_name=EMBEDDINGS_MODEL)
-
-    # Vector store (carregado do volume compartilhado pelo ETL)
     vectorstore = FAISS.load_local(
         FAISS_STORE_DIR,
         embeddings_model,
         allow_dangerous_deserialization=True
     )
-    print(f"[API] FAISS carregado a partir de: {FAISS_STORE_DIR}", flush=True)
+    print(f"[API] FAISS carregado: {FAISS_STORE_DIR}", flush=True)
 except Exception as e:
     print(f"[API] Falha ao carregar FAISS em '{FAISS_STORE_DIR}': {e}", flush=True)
 
-# Atualiza readiness após tentar carregar
 _update_readiness(vectorstore)
 
-# ------------------------------------------------------------------------------
-# Rotas
-# ------------------------------------------------------------------------------
 @app.get("/")
 def root():
     return jsonify({"status": "ok"})
@@ -98,13 +79,27 @@ def healthz():
         "llm": bool(LLM_OK),
         "require_llm_ready": REQUIRE_LLM_READY,
         "faiss_store_dir": FAISS_STORE_DIR,
+        "embeddings_model": EMBEDDINGS_MODEL,
     }
     code = 200 if status["ready"] else 503
     return jsonify(status), code
 
+@app.get("/metrics")
+def metrics():
+    uptime = time.time() - START_TS
+    payload = {
+        "uptime_sec": int(uptime),
+        "counters": dict(METRICS),
+    }
+    return jsonify(payload), 200
+
 @app.post("/query")
 def query():
+    rid = str(uuid.uuid4())
+    ts0 = time.time()
+
     if vectorstore is None or embeddings_model is None:
+        METRICS["error_no_index"] += 1
         return jsonify({
             "answer": "Índice não carregado. Rode o ETL para gerar o FAISS e tente novamente.",
             "citations": [],
@@ -114,18 +109,37 @@ def query():
     data = request.get_json(silent=True) or {}
     question = (data.get("question") or data.get("query") or data.get("q") or "").strip()
     if not question:
-        return jsonify({"error": "Informe o campo 'question' (ou 'query'/'q') no JSON."}), 400
+        METRICS["bad_request"] += 1
+        return jsonify({"error": "Informe 'question' (ou 'query'/'q') no JSON."}), 400
 
+    res = {}
+    status = "ok"
     try:
-        result = answer_question(question, embeddings_model, vectorstore)
-        # Mantenha o formato atual (answer/citations/context_found/needs_clarification opcional)
-        return jsonify(result)
+        res = answer_question(question, embeddings_model, vectorstore)
+        METRICS["queries_total"] += 1
+        if res.get("needs_clarification"):
+            METRICS["queries_ambiguous"] += 1
+        elif not res.get("context_found"):
+            METRICS["queries_not_found"] += 1
+        else:
+            METRICS["queries_answered"] += 1
     except Exception as e:
-        return jsonify({"error": f"Falha ao processar pergunta: {e}"}), 500
+        status = f"error:{type(e).__name__}"
+        METRICS["errors_internal"] += 1
+        res = {"error": f"Falha ao processar pergunta: {e}"}
 
-# ------------------------------------------------------------------------------
-# Main (desenvolvimento)
-# ------------------------------------------------------------------------------
+    took_ms = int((time.time() - ts0) * 1000)
+    log = {
+        "rid": rid,
+        "status": status,
+        "took_ms": took_ms,
+        "question": question[:400],
+        "ready": APP_READY,
+        "faiss": FAISS_OK,
+        "llm": LLM_OK,
+    }
+    print(json.dumps(log, ensure_ascii=False), flush=True)
+    return jsonify(res)
+
 if __name__ == "__main__":
-    # Executa o Flask embutido (em produção, prefira um WSGI server)
     app.run(host="0.0.0.0", port=5000)

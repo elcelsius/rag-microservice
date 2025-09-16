@@ -19,15 +19,15 @@ services:
     restart: unless-stopped
 
   ai_etl:
-    # Constrói o índice FAISS e termina (exit 0 quando OK)
     build:
       context: .
       target: etl
     container_name: ai_etl
     environment:
       DATABASE_URL: "postgresql://postgres:postgres@ai_postgres:5432/ragdb"
-      DATA_DIR: "/app/data/txt"
+      DATA_DIR: "/app/data"
       FAISS_OUT_DIR: "/app/vector_store/faiss_index"
+      EMBEDDINGS_MODEL: "${EMBEDDINGS_MODEL:-sentence-transformers/all-MiniLM-L6-v2}"
     depends_on:
       ai_postgres:
         condition: service_healthy
@@ -35,25 +35,21 @@ services:
       - ./data:/app/data:ro
       - vector_store:/app/vector_store
     working_dir: /app
-    # 👇 use python3 (não 'python') para evitar exit 127
     command: ["bash", "-lc", "python3 -u scripts/etl_build_index.py && echo 'ETL done'"]
     restart: "no"
 
   ai_projeto_api:
-    # API Flask que serve /query e /healthz
     build:
       context: .
       target: ai_api
     container_name: ai_projeto_api
     environment:
       FAISS_STORE_DIR: "/app/vector_store/faiss_index"
-      # LLM (Google Gemini)
+      EMBEDDINGS_MODEL: "${EMBEDDINGS_MODEL:-sentence-transformers/all-MiniLM-L6-v2}"
       GOOGLE_API_KEY: "${GOOGLE_API_KEY:-}"
       GOOGLE_MODEL:   "${GOOGLE_MODEL:-gemini-2.5-flash-lite}"
-      # Health: exige LLM pronto para ficar "ready"? (true/false)
       REQUIRE_LLM_READY: "${REQUIRE_LLM_READY:-false}"
     depends_on:
-      # só sobe depois do ETL concluir com sucesso (índice pronto no volume)
       ai_etl:
         condition: service_completed_successfully
     volumes:
@@ -79,7 +75,6 @@ services:
     ports:
       - "8080:80"
     volumes:
-      # ajuste estes paths conforme sua árvore local de UI
       - ./web_ui/html:/usr/share/nginx/html:ro
       - ./web_ui/nginx.default.conf:/etc/nginx/conf.d/default.conf:ro
     restart: unless-stopped
