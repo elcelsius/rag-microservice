@@ -1,118 +1,131 @@
+# api.py
+from __future__ import annotations
+
 import os
-from typing import Any, Dict
-
 from flask import Flask, request, jsonify
-from flask_cors import CORS
-from dotenv import load_dotenv
 
-from langchain_community.embeddings import HuggingFaceEmbeddings
+# LangChain/FAISS
 from langchain_community.vectorstores import FAISS
+from langchain_community.embeddings import HuggingFaceEmbeddings
 
+# Seu pipeline de resposta (já integrado aos prompts via llm_client no query_handler)
 from query_handler import answer_question
-from triage import run_triage
 
-load_dotenv()
+# Para verificar se o LLM está configurado/pronto
+try:
+    from llm_client import _lazy_client as _llm_lazy_client  # type: ignore
+except Exception:
+    _llm_lazy_client = None
 
+# ------------------------------------------------------------------------------
+# Readiness flags
+# ------------------------------------------------------------------------------
+APP_READY = False
+FAISS_OK = False
+LLM_OK = False
+REQUIRE_LLM_READY = os.getenv("REQUIRE_LLM_READY", "false").lower() in ("1", "true", "yes")
+
+# ------------------------------------------------------------------------------
+# Flask app
+# ------------------------------------------------------------------------------
 app = Flask(__name__)
-CORS(app)
 
-EMBEDDINGS_MODEL_NAME = os.getenv(
-    "EMBEDDINGS_MODEL_NAME",
-    "sentence-transformers/all-MiniLM-L6-v2"
-)
-VECTOR_DIR = os.getenv("FAISS_STORE_DIR", "/app/vector_store/faiss_index")
-
-# Inicializa embeddings (CPU por padrão)
-embeddings_model = HuggingFaceEmbeddings(
-    model_name=EMBEDDINGS_MODEL_NAME,
-    # sem model_kwargs={"device": ...} -> evita dependência de torch no import
-)
-
-vectorstore = None
-_vector_error = None
-
-# Espera arquivos do índice existirem (compose já espera, mas deixamos redundante e tolerante)
-def _wait_index(path: str, tries: int = 60, sleep_s: float = 1.0) -> bool:
-    import time
-    for _ in range(tries):
-        if os.path.isfile(os.path.join(path, "index.faiss")) and os.path.isfile(os.path.join(path, "index.pkl")):
-            return True
-        time.sleep(sleep_s)
-    return False
-
-if _wait_index(VECTOR_DIR, tries=10, sleep_s=1.0):
+# ------------------------------------------------------------------------------
+# Utilidades de prontidão
+# ------------------------------------------------------------------------------
+def _probe_faiss(vs) -> bool:
     try:
-        vectorstore = FAISS.load_local(
-            VECTOR_DIR,
-            embeddings_model,
-            allow_dangerous_deserialization=True
-        )
-    except Exception as e:
-        _vector_error = f"Falha ao carregar índice em '{VECTOR_DIR}': {e}"
-else:
-    _vector_error = f"Arquivos do índice não encontrados em '{VECTOR_DIR}'."
-
-def _get_question_from_request(req) -> str:
-    payload: Dict[str, Any] = {}
-    try:
-        payload = req.get_json(silent=True) or {}
+        all_docs = list(getattr(vs.docstore, "_dict", {}).values())
+        return len(all_docs) > 0
     except Exception:
-        payload = {}
-    q = payload.get("question") or payload.get("query") or payload.get("q") or ""
-    return (q or "").strip()
+        return False
 
-def _error(msg: str, code: int = 400):
-    return jsonify({"error": msg}), code
+def _probe_llm() -> bool:
+    if _llm_lazy_client is None:
+        return False
+    try:
+        provider, _ = _llm_lazy_client()
+        # nomes usados no llm_client.py unificado (google/openai) – ok se não houver nenhum
+        return provider in ("google", "openai")
+    except Exception:
+        return False
 
-def _handle_question(question: str):
-    if _vector_error:
-        # Resposta degradada, mas o container fica de pé e o healthcheck passa
+def _update_readiness(vs=None):
+    global APP_READY, FAISS_OK, LLM_OK
+    if vs is not None:
+        FAISS_OK = _probe_faiss(vs)
+    LLM_OK = _probe_llm()
+    APP_READY = FAISS_OK and (LLM_OK if REQUIRE_LLM_READY else True)
+
+# ------------------------------------------------------------------------------
+# Carregamento do índice FAISS + embeddings
+# ------------------------------------------------------------------------------
+FAISS_STORE_DIR = os.getenv("FAISS_STORE_DIR", "/app/vector_store/faiss_index")
+EMBEDDINGS_MODEL = os.getenv("EMBEDDINGS_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
+
+embeddings_model = None
+vectorstore = None
+
+try:
+    # Embeddings
+    embeddings_model = HuggingFaceEmbeddings(model_name=EMBEDDINGS_MODEL)
+
+    # Vector store (carregado do volume compartilhado pelo ETL)
+    vectorstore = FAISS.load_local(
+        FAISS_STORE_DIR,
+        embeddings_model,
+        allow_dangerous_deserialization=True
+    )
+    print(f"[API] FAISS carregado a partir de: {FAISS_STORE_DIR}", flush=True)
+except Exception as e:
+    print(f"[API] Falha ao carregar FAISS em '{FAISS_STORE_DIR}': {e}", flush=True)
+
+# Atualiza readiness após tentar carregar
+_update_readiness(vectorstore)
+
+# ------------------------------------------------------------------------------
+# Rotas
+# ------------------------------------------------------------------------------
+@app.get("/")
+def root():
+    return jsonify({"status": "ok"})
+
+@app.get("/healthz")
+def healthz():
+    status = {
+        "ready": bool(APP_READY),
+        "faiss": bool(FAISS_OK),
+        "llm": bool(LLM_OK),
+        "require_llm_ready": REQUIRE_LLM_READY,
+        "faiss_store_dir": FAISS_STORE_DIR,
+    }
+    code = 200 if status["ready"] else 503
+    return jsonify(status), code
+
+@app.post("/query")
+def query():
+    if vectorstore is None or embeddings_model is None:
         return jsonify({
-            "answer": f"Serviço está no ar, porém o índice não foi carregado. Detalhe: {_vector_error}",
+            "answer": "Índice não carregado. Rode o ETL para gerar o FAISS e tente novamente.",
             "citations": [],
             "context_found": False
-        }), 200
+        }), 503
 
-    triage = run_triage(question)
-    if triage.get("action") == "ask_clarification":
-        return jsonify({
-            "answer": triage.get("message", "Poderia detalhar melhor a sua pergunta?"),
-            "citations": [],
-            "context_found": False,
-            "needs_clarification": True
-        }), 200
+    data = request.get_json(silent=True) or {}
+    question = (data.get("question") or data.get("query") or data.get("q") or "").strip()
+    if not question:
+        return jsonify({"error": "Informe o campo 'question' (ou 'query'/'q') no JSON."}), 400
 
-    result = answer_question(question, embeddings_model, vectorstore)
-    return jsonify(result), 200
-
-@app.route("/ask", methods=["POST"])
-def ask():
     try:
-        question = _get_question_from_request(request)
-        return _handle_question(question)
+        result = answer_question(question, embeddings_model, vectorstore)
+        # Mantenha o formato atual (answer/citations/context_found/needs_clarification opcional)
+        return jsonify(result)
     except Exception as e:
-        print(f"[ERROR] /ask -> {e}")
-        return _error(f"Falha ao processar a pergunta: {e}", 500)
+        return jsonify({"error": f"Falha ao processar pergunta: {e}"}), 500
 
-@app.route("/query", methods=["GET", "POST"])
-def query():
-    try:
-        if request.method == "GET":
-            q = request.args.get("q") or request.args.get("query") or request.args.get("question") or ""
-        else:
-            q = _get_question_from_request(request)
-        return _handle_question(q)
-    except Exception as e:
-        print(f"[ERROR] /query -> {e}")
-        return _error(f"Falha ao processar a pergunta: {e}", 500)
-
-@app.route("/", methods=["GET"])
-def health():
-    status = {"status": "ok"}
-    if _vector_error:
-        status["warning"] = _vector_error
-    return jsonify(status), 200
-
+# ------------------------------------------------------------------------------
+# Main (desenvolvimento)
+# ------------------------------------------------------------------------------
 if __name__ == "__main__":
-    # bind 0.0.0.0 para aceitar chamadas de outros containers
-    app.run(host="0.0.0.0", port=int(os.getenv("PORT", "5000")))
+    # Executa o Flask embutido (em produção, prefira um WSGI server)
+    app.run(host="0.0.0.0", port=5000)

@@ -3,20 +3,23 @@ from __future__ import annotations
 
 import re
 import unicodedata
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Tuple, Optional
 
 from rapidfuzz import fuzz, distance
 from langchain_community.vectorstores import FAISS
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain.schema import Document
 
+from llm_client import load_prompt, call_llm
+
 # =======================
-# Regras e utilidades
+# Regras / utilitários
 # =======================
 _SENT_SPLIT = re.compile(r"(?<=[\.\!\?\;\:])\s+|\n+")
 _WS = re.compile(r"\s+")
 EMAIL_RE = re.compile(r"[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}", re.IGNORECASE)
 PHONE_RE = re.compile(r"\(?\d{2}\)?\s?\d{4,5}-\d{4}")
+WORD_RE = re.compile(r"[A-Za-zÀ-ÖØ-öø-ÿ]+")
 
 STOP = {
     "que","qual","quais","sobre","para","como","onde","quem",
@@ -42,15 +45,26 @@ def _strip_accents_lower(s: str) -> str:
     nfkd = unicodedata.normalize("NFD", s or "")
     return "".join(ch for ch in nfkd if not unicodedata.combining(ch)).lower()
 
-def _guess_dept_from_source(src: str) -> str | None:
+def _tokenize_letters(text: str) -> List[str]:
+    return WORD_RE.findall(text or "")
+
+def _guess_dept_from_source(src: str) -> Optional[str]:
     s = _strip_accents_lower(src or "")
     for key, label in DEPT_LABELS:
         if key in s:
             return label
     return None
 
+def _dept_hints_in_question(q: str) -> List[str]:
+    s = _strip_accents_lower(q)
+    hints = []
+    for key, label in DEPT_LABELS:
+        if key in s and label not in hints:
+            hints.append(label)
+    return hints
+
 # =======================
-# Termos e variantes
+# Extração e triagem local
 # =======================
 def _candidate_terms(question: str) -> List[str]:
     q = (question or "").strip()
@@ -67,79 +81,50 @@ def _candidate_terms(question: str) -> List[str]:
     return terms
 
 def _term_variants(term: str) -> List[str]:
-    """Gera variantes simples p/ nomes: Andreia ~ Andrea; Joao ~ João etc."""
     t = _strip_accents_lower(term)
     vs = {t}
-    # Andreia -> Andrea (remove 'i' pós 'e')
     if t.endswith("eia"):
-        vs.add(t[:-3] + "ea")
-    # normalizações mínimas
+        vs.add(t[:-3] + "ea")  # andreia ~ andrea
     vs.add(t.replace("ç", "c").replace("á","a").replace("é","e").replace("í","i").replace("ó","o").replace("ú","u"))
     return list(vs)
 
-# =======================
-# Matching de nomes (token)
-# =======================
-WORD_RE = re.compile(r"[A-Za-zÀ-ÖØ-öø-ÿ]+")
-
-def _tokenize_letters(text: str) -> List[str]:
-    return WORD_RE.findall(text or "")
-
 def _is_name_like(token: str) -> bool:
-    # heurística: só letras e >= 5 chars
     return token.isalpha() and len(token) >= 5
 
 def _name_token_match(token_norm: str, term_norm: str) -> bool:
-    """
-    Aproximação para NOMES:
-      - comprimentos parecidos (diferença <= 1)
-      - alta similaridade (>= 0.86)
-      -> evita 'andre' quando pedem 'andreia' (diferença de comprimento = 2)
-    """
     if abs(len(token_norm) - len(term_norm)) > 1:
         return False
-    sim = distance.Levenshtein.normalized_similarity(token_norm, term_norm)  # 0..1
+    sim = distance.Levenshtein.normalized_similarity(token_norm, term_norm)
     return sim >= 0.86
 
-def _sentence_hits(text: str, terms: List[str]) -> List[Tuple[str, int]]:
-    """
-    Marca sentenças/linhas que contenham um TOKEN parecido com o termo (regra de nome),
-    ou, se não for nome, usa fuzzy por frase. Retorna [(sentenca,score)].
-    """
+def _sentence_hits_by_name(text: str, terms: List[str]) -> List[Tuple[str, int]]:
     out: List[Tuple[str, int]] = []
     if not text or not terms:
         return out
 
     sentences = [s for s in _SENT_SPLIT.split(text) if _norm_ws(s)]
-    terms_norm_lists = [_term_variants(t) for t in terms]
-    # flattens + dedup
-    all_norms = list({tn for lst in terms_norm_lists for tn in lst})
+    all_norms = list({tn for t in terms for tn in _term_variants(t)})
 
     for sent in sentences:
         s_clean = _norm_ws(sent)
         s_norm = _strip_accents_lower(s_clean)
         best = 0
-        # 1) tente por tokens (nomes)
         tokens = _tokenize_letters(s_clean)
         tokens_norm = [_strip_accents_lower(tk) for tk in tokens]
         hit = False
         for tn in all_norms:
             for tk in tokens_norm:
                 if _is_name_like(tk) and _name_token_match(tk, tn):
-                    # score baseado na similaridade de nome
                     sc = int(100 * distance.Levenshtein.normalized_similarity(tk, tn))
                     best = max(best, sc)
                     hit = True
-        # 2) fallback por frase (se ainda não bateu como nome)
         if not hit:
             for tn in all_norms:
                 sc = fuzz.partial_ratio(tn, s_norm)
                 best = max(best, sc)
-
-        if best >= 86:  # limiar mais alto p/ evitar André vs Andreia
+        if best >= 86:
             out.append((s_clean, best))
 
-    # ordena e dedup
     out.sort(key=lambda x: x[1], reverse=True)
     seen, uniq = set(), []
     for s, sc in out:
@@ -149,9 +134,8 @@ def _sentence_hits(text: str, terms: List[str]) -> List[Tuple[str, int]]:
             seen.add(k)
     return uniq[:3]
 
-# =======================
-# Extração de contatos e nome
-# =======================
+NAME_SEQ_RE = re.compile(r"([A-ZÁ-Ü][a-zá-ü]+(?:\s+[A-ZÁ-Ü][a-zá-ü]+){1,5})")
+
 def _extract_contacts(texts: List[str]) -> Dict[str, List[str]]:
     emails, phones = set(), set()
     for t in texts:
@@ -161,20 +145,14 @@ def _extract_contacts(texts: List[str]) -> Dict[str, List[str]]:
             phones.add(p)
     return {"emails": sorted(emails), "phones": sorted(phones)}
 
-NAME_SEQ_RE = re.compile(r"([A-ZÁ-Ü][a-zá-ü]+(?:\s+[A-ZÁ-Ü][a-zá-ü]+){1,5})")
-
-def _extract_name(snippets: List[str], term: str) -> str | None:
-    """Tenta extrair um nome próprio que contenha o termo (sem acento) nos snippets."""
+def _extract_name(snippets: List[str], term: str) -> Optional[str]:
     tnorm = _strip_accents_lower(term or "")
     for s in snippets:
         cands = NAME_SEQ_RE.findall(s or "")
         if not cands:
             continue
-        # tente o candidato que contém o termo aproximado
-        best = None
-        best_sim = 0.0
+        best, best_sim = None, 0.0
         for cand in cands:
-            # escolha o token do cand mais parecido com o termo
             for tk in _tokenize_letters(cand):
                 sim = distance.Levenshtein.normalized_similarity(_strip_accents_lower(tk), tnorm)
                 if sim > best_sim:
@@ -182,7 +160,6 @@ def _extract_name(snippets: List[str], term: str) -> str | None:
                     best = cand
         if best and best_sim >= 0.82:
             return best
-    # fallback: primeiro candidato do primeiro snippet
     for s in snippets:
         cands = NAME_SEQ_RE.findall(s or "")
         if cands:
@@ -199,9 +176,6 @@ def _as_citation(doc: Document) -> Dict[str, Any]:
         "preview": preview,
     }
 
-# =======================
-# Fallback por embeddings
-# =======================
 def _top_sentences(question: str, texts: List[str], top_n: int = 3) -> List[Tuple[str, float]]:
     sentences: List[str] = []
     for t in texts:
@@ -220,6 +194,81 @@ def _top_sentences(question: str, texts: List[str], top_n: int = 3) -> List[Tupl
     scored.sort(key=lambda x: x[1], reverse=True)
     return scored[:top_n]
 
+# ============ Janela de contexto ao redor do nome ============
+def _context_window_around_name(doc_text: str, person_name: str, chars_before: int = 220, chars_after: int = 300) -> Optional[str]:
+    """
+    Procura a string exata do nome no texto do documento e extrai uma janela de contexto.
+    Isso captura linhas adjacentes (telefone, email) típicas de listas de docentes.
+    """
+    if not (doc_text and person_name):
+        return None
+    txt = doc_text
+    name = person_name.strip()
+    idx = txt.find(name)
+    if idx < 0:
+        # tenta ignorar múltiplos espaços
+        compact_name = _norm_ws(name)
+        idx = _norm_ws(txt).find(compact_name)
+        if idx < 0:
+            return None
+    start = max(0, idx - chars_before)
+    end = min(len(txt), idx + len(name) + chars_after)
+    return _norm_ws(txt[start:end])
+
+# =======================
+# Integração com prompts (LLM)
+# =======================
+_TRIAGE_PROMPT = load_prompt("triagem_prompt.txt")
+_PEDIR_INFO_PROMPT = load_prompt("pedir_info_prompt.txt")
+_RESPOSTA_PROMPT = load_prompt("resposta_final_prompt.txt")
+
+def _llm_triage(question: str, signals: Dict[str, Any]) -> Dict[str, Any]:
+    if not _TRIAGE_PROMPT:
+        return {"action": "AUTO_RESOLVER", "ask": ""}
+    user_payload = f"Pergunta: {question}\n\nSinais:\n{signals}"
+    _, data = call_llm(_TRIAGE_PROMPT, user_payload, expect_json=True, max_tokens=150)
+    if isinstance(data, dict) and "action" in data:
+        return {"action": data.get("action"), "ask": data.get("ask", "")}
+    return {"action": "AUTO_RESOLVER", "ask": ""}
+
+def _llm_pedir_info(question: str, options: List[str], prefer_attr: str = "departamento") -> str:
+    if not _PEDIR_INFO_PROMPT:
+        if options:
+            return f"Encontrei múltiplas possibilidades: {', '.join(options[:3])}. Pode dizer qual delas?"
+        return "Pode informar o departamento/unidade para eu localizar a pessoa correta?"
+    payload = f"Pergunta original: {question}\nOpções encontradas (máx 3): {options[:3]}\nAtributo preferencial para pedir: {prefer_attr}"
+    text, _ = call_llm(_PEDIR_INFO_PROMPT, payload, expect_json=False, max_tokens=120)
+    return (text or "").strip() or "Pode informar o departamento/unidade?"
+
+def _format_direct(name: Optional[str], dept: Optional[str], contacts: Dict[str, List[str]], context_snippets: List[str]) -> str:
+    parts = []
+    if name: parts.append(name)
+    if dept: parts.append(dept)
+    if contacts.get("phones"): parts.append("📞 " + ", ".join(contacts["phones"]))
+    if contacts.get("emails"): parts.append("✉️ " + ", ".join(contacts["emails"]))
+    if parts:
+        return " — ".join(parts)
+    return (context_snippets[0] if context_snippets else "Não encontrei.")[:400]
+
+def _llm_resposta_final(question: str, context_snippets: List[str], name: Optional[str], dept: Optional[str], contacts: Dict[str, List[str]]) -> str:
+    if not _RESPOSTA_PROMPT:
+        return _format_direct(name, dept, contacts, context_snippets)
+
+    ctx = "\n\n".join(f"- {s}" for s in context_snippets[:6])
+    meta = {
+        "nome": name or "",
+        "departamento": dept or "",
+        "telefones": contacts.get("phones", []),
+        "emails": contacts.get("emails", []),
+    }
+    user = f"Pergunta: {question}\n\nContexto (trechos):\n{ctx}\n\nMetadados extraídos:\n{meta}\n\nFormato: Nome — Departamento — 📞 — ✉️ (curto)."
+    text, _ = call_llm(_RESPOSTA_PROMPT, user, expect_json=False, max_tokens=220)
+
+    if not (text or "").strip():
+        return _format_direct(name, dept, contacts, context_snippets)
+
+    return text.strip()
+
 # =======================
 # Pipeline principal
 # =======================
@@ -231,67 +280,96 @@ def answer_question(
     k: int = 5,
     fetch_k: int = 20,
 ) -> Dict[str, Any]:
+
     q = _norm_ws(question)
     if not q:
         return {"answer": "Não entendi a pergunta. Pode reformular?", "citations": [], "context_found": False}
 
-    # ---- 1) Busca lexical por sentenças (ótimo p/ nomes) ----
-    terms = _candidate_terms(q)
     try:
-        all_docs = list(getattr(vectorstore.docstore, "_dict", {}).values())
+        all_docs: List[Document] = list(getattr(vectorstore.docstore, "_dict", {}).values())
     except Exception:
         all_docs = []
+    dept_hints = _dept_hints_in_question(q)
 
-    lex_results: List[Tuple[Document, List[Tuple[str,int]], int]] = []
+    terms = _candidate_terms(q)
+    lex_hits: List[Tuple[Document, List[Tuple[str,int]], int]] = []
     if terms and all_docs:
         for d in all_docs:
-            hits = _sentence_hits(d.page_content or "", terms)
+            src = (d.metadata.get("source") or "").lower()
+            score_bonus = 8 if any(_strip_accents_lower(h) in src for h in dept_hints) else 0
+            hits = _sentence_hits_by_name(d.page_content or "", terms)
             if hits:
-                best = max(sc for _, sc in hits)
-                lex_results.append((d, hits, best))
-        lex_results.sort(key=lambda x: x[2], reverse=True)
-        lex_results = lex_results[:5]
+                best = max(sc for _, sc in hits) + score_bonus
+                lex_hits.append((d, hits, best))
 
-    if lex_results:
-        snippets, citations = [], []
-        for doc, hits, _best in lex_results:
+        lex_hits.sort(key=lambda x: x[2], reverse=True)
+        lex_hits = lex_hits[:6]
+
+    if lex_hits:
+        sentence_snippets: List[str] = []
+        citations = []
+        for doc, hits, _best in lex_hits:
             for s, _ in hits[:2]:
-                snippets.append(s)
+                sentence_snippets.append(s)
             citations.append(_as_citation(doc))
-            if len(snippets) >= 6:
+            if len(sentence_snippets) >= 6:
                 break
 
-        info = _extract_contacts(snippets)
-
-        # tenta achar um nome alinhado ao termo principal (se houver só um)
-        name = None
+        contacts = _extract_contacts(sentence_snippets)
         name_terms = [t for t in terms if t.isalpha()]
-        if name_terms:
-            name = _extract_name(snippets, name_terms[0])
-
-        # departamento via nome do arquivo
+        name = _extract_name(sentence_snippets, name_terms[0]) if name_terms else None
         dept = None
         if citations:
             dept = _guess_dept_from_source(citations[0]["source"])
 
-        # monta resposta curta e direta
-        parts = []
-        if name:
-            parts.append(name)
-        if dept:
-            parts.append(dept)
-        if info["phones"]:
-            parts.append(f"📞 {', '.join(info['phones'])}")
-        if info["emails"]:
-            parts.append(f"✉️ {', '.join(info['emails'])}")
+        # janela extra ao redor do nome para capturar tel/email em linhas adjacentes
+        context_snippets = list(sentence_snippets)
+        if name and (not contacts["phones"]):
+            ref_doc = None
+            for d, hits, _b in lex_hits:
+                if any(name in s for s,_ in hits):
+                    ref_doc = d
+                    break
+            ref_doc = ref_doc or lex_hits[0][0]
+            win = _context_window_around_name(ref_doc.page_content or "", name, 220, 300)
+            if win:
+                context_snippets.insert(0, win)
+                more = _extract_contacts([win])
+                phones = list(dict.fromkeys(contacts["phones"] + more["phones"]))
+                emails = list(dict.fromkeys(contacts["emails"] + more["emails"]))
+                contacts = {"phones": phones, "emails": emails}
 
-        answer = " — ".join(parts) if parts else " ".join(snippets[:2]).strip()
-        if not answer:
-            answer = "Encontrei referências relacionadas, mas não localizei um trecho textual claro."
+        triage_signals = {
+            "dept_hints_in_question": dept_hints,
+            "candidates_found": len(lex_hits),
+            "have_name": bool(name),
+            "phones_found": contacts.get("phones", []),
+            "emails_found": contacts.get("emails", []),
+        }
+        tri = _llm_triage(q, triage_signals)
+        if tri.get("action") == "PEDIR_INFO":
+            options: List[str] = []
+            if len(lex_hits) >= 2:
+                for d, hits, _b in lex_hits[:3]:
+                    nm = _extract_name([hits[0][0]], name_terms[0] if name_terms else "")
+                    if nm and nm not in options:
+                        options.append(nm)
+            ask = tri.get("ask") or _llm_pedir_info(q, options, prefer_attr="departamento")
+            return {
+                "answer": ask,
+                "citations": [],
+                "context_found": False,
+                "needs_clarification": True
+            }
 
-        return {"answer": answer, "citations": citations[:3], "context_found": True}
+        final = _llm_resposta_final(q, context_snippets or sentence_snippets, name, dept, contacts)
+        return {
+            "answer": final,
+            "citations": citations[:3],
+            "context_found": True
+        }
 
-    # ---- 2) Fallback: embeddings (MMR) ----
+    # Fallback embeddings (MMR)
     try:
         docs: List[Document] = vectorstore.max_marginal_relevance_search(q, k=k, fetch_k=fetch_k)
     except Exception:
@@ -302,13 +380,21 @@ def answer_question(
 
     top_texts = [d.page_content for d in docs]
     sent_scores = _top_sentences(q, top_texts, top_n=3)
-
     if sent_scores and sent_scores[0][1] >= 0.45:
-        answer = " ".join([s for s, _ in sent_scores][:3])
+        body = " ".join([s for s, _ in sent_scores][:3])
     else:
-        answer = _norm_ws(docs[0].page_content)
-        if len(answer) > 500:
-            answer = answer[:500].rstrip() + "..."
+        body = _norm_ws(docs[0].page_content)
+        if len(body) > 500:
+            body = body[:500].rstrip() + "..."
 
     citations = [_as_citation(d) for d in docs[:3]]
-    return {"answer": answer, "citations": citations, "context_found": True}
+
+    final = _llm_resposta_final(q, [s for s, _ in sent_scores] if sent_scores else [body], None, None, {"emails": [], "phones": []})
+    if not final:
+        final = body
+
+    return {
+        "answer": final,
+        "citations": citations,
+        "context_found": True
+    }

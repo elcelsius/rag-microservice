@@ -1,23 +1,38 @@
-# Passo 1: Usar a imagem de DESENVOLVIMENTO da NVIDIA, que contém o toolkit completo.
-FROM nvidia/cuda:12.1.1-cudnn8-devel-ubuntu22.04
+# syntax=docker/dockerfile:1
 
-# Passo 2: Instalar a versão padrão do Python e o pip para o Ubuntu 24.04
-ENV DEBIAN_FRONTEND=noninteractive
+# ====== Base comum (CUDA + Python 3.11) ======
+FROM nvidia/cuda:12.1.1-cudnn8-devel-ubuntu22.04 AS base
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
 RUN apt-get update && \
-    apt-get install -y python3.11 python3-pip && \
-    apt-get clean
+    apt-get install -y --no-install-recommends \
+      python3.11 python3-pip python3.11-venv \
+      python-is-python3 \
+      build-essential curl ca-certificates && \
+    apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# Define o diretório de trabalho padrão
+# garante que "python" exista (além do pacote acima):
+RUN ln -sf /usr/bin/python3 /usr/bin/python
+
 WORKDIR /app
 
-# Copia primeiro o arquivo de dependências para aproveitar o cache do Docker
-COPY requirements.txt ./requirements.txt
+# requirements + install
+COPY requirements.txt /app/requirements.txt
+RUN python3 -m pip install --upgrade pip && \
+    python3 -m pip install --no-cache-dir -r /app/requirements.txt
 
-# Instala as dependências, quebrando a proteção do sistema (seguro dentro do Docker)
-RUN pip3 install --no-cache-dir -r requirements.txt
+# código
+COPY . /app
 
-# Copia todo o resto do código do projeto para o diretório de trabalho
-COPY . .
+# ====== Estágio: ETL ======
+FROM base AS etl
+# sem CMD aqui; o docker-compose define o command em ai_etl
 
-# Define o comando padrão que será executado
-CMD ["python3", "etl_orchestrator.py"]
+# ====== Estágio: API ======
+FROM base AS ai_api
+EXPOSE 5000
+ENV FLASK_ENV=production
+# use python3 aqui para evitar o erro "python not found"
+CMD ["python3", "-u", "api.py"]
