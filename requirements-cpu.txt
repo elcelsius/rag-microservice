@@ -8,6 +8,7 @@ sentence-transformers
 faiss-cpu
 torch
 langgraph
+rapidfuzz         # fuzzy matching leve pra nomes
 
 # Pinamos a versão do NumPy para garantir compatibilidade com faiss-gpu
 numpy==1.26.4

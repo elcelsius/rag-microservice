@@ -1,170 +1,314 @@
 # query_handler.py
-import os
-import torch
-import psycopg2
-import faiss
-import numpy as np
-import google.generativeai as genai
-from dotenv import load_dotenv
-from langchain_huggingface import HuggingFaceEmbeddings
+from __future__ import annotations
 
-load_dotenv()
+import re
+import unicodedata
+from typing import Any, Dict, List, Tuple
 
-# --- CONFIGURAÇÕES E INICIALIZAÇÃO DE MODELOS ---
-GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
-if GOOGLE_API_KEY:
-    genai.configure(api_key=GOOGLE_API_KEY)
+from rapidfuzz import fuzz, distance
+from langchain_community.vectorstores import FAISS
+from langchain_community.embeddings import HuggingFaceEmbeddings
+from langchain.schema import Document
 
-MODEL_NAME = os.getenv("GEMINI_MODEL_NAME", "gemini-1.5-flash")
-DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-DB_HOST = os.getenv("POSTGRES_HOST", "postgres")
-DB_NAME = os.getenv("POSTGRES_DB")
-DB_USER = os.getenv("POSTGRES_USER")
-DB_PASSWORD = os.getenv("POSTGRES_PASSWORD")
-DB_PORT = os.getenv("POSTGRES_PORT", "5432")
-VECTOR_STORE_PATH = "vector_store/faiss_index"
-# Carrega o threshold do .env, convertendo para float
-FAISS_SCORE_THRESHOLD = float(os.getenv("FAISS_SCORE_THRESHOLD", "1.0"))
+# =======================
+# Regras e utilidades
+# =======================
+_SENT_SPLIT = re.compile(r"(?<=[\.\!\?\;\:])\s+|\n+")
+_WS = re.compile(r"\s+")
+EMAIL_RE = re.compile(r"[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}", re.IGNORECASE)
+PHONE_RE = re.compile(r"\(?\d{2}\)?\s?\d{4,5}-\d{4}")
 
-# Carregamento dos modelos na inicialização do módulo para reuso
-embeddings_model = HuggingFaceEmbeddings(
-    model_name="all-MiniLM-L6-v2",
-    model_kwargs={'device': DEVICE}
-)
-index = faiss.read_index(f"{VECTOR_STORE_PATH}/index.faiss")
+STOP = {
+    "que","qual","quais","sobre","para","como","onde","quem",
+    "contato","email","e-mail","fone","telefone","ramal",
+    "da","de","do","um","uma","o","a","os","as"
+}
 
+DEPT_LABELS = [
+    ("computacao", "Computação"),
+    ("biologia", "Biologia"),
+    ("stpg", "STPG"),
+    ("staepe", "STAEPE"),
+    ("dti", "DTI"),
+    ("administracao", "Administração"),
+    ("congregacao", "Congregação"),
+    ("diretoria", "Diretoria Técnica Acadêmica"),
+]
 
-# --- FUNÇÕES AUXILIARES ---
-def get_db_connection():
-    """Estabelece e retorna uma conexão com o banco de dados Postgres."""
-    return psycopg2.connect(dbname=DB_NAME, user=DB_USER, password=DB_PASSWORD, host=DB_HOST, port=DB_PORT)
+def _norm_ws(s: str) -> str:
+    return _WS.sub(" ", (s or "").strip())
 
+def _strip_accents_lower(s: str) -> str:
+    nfkd = unicodedata.normalize("NFD", s or "")
+    return "".join(ch for ch in nfkd if not unicodedata.combining(ch)).lower()
 
-def _formatar_citacoes(db_results: list, query: str) -> list[dict]:
-    """Formata os resultados do banco de dados em uma lista de citações legível."""
-    if not db_results:
+def _guess_dept_from_source(src: str) -> str | None:
+    s = _strip_accents_lower(src or "")
+    for key, label in DEPT_LABELS:
+        if key in s:
+            return label
+    return None
+
+# =======================
+# Termos e variantes
+# =======================
+def _candidate_terms(question: str) -> List[str]:
+    q = (question or "").strip()
+    if not q:
         return []
+    emails = EMAIL_RE.findall(q)
+    words = re.findall(r"[A-Za-zÀ-ÖØ-öø-ÿ0-9]{3,}", q)
+    terms, seen = [], set()
+    for w in emails + words:
+        k = _strip_accents_lower(w)
+        if k not in STOP and k not in seen:
+            terms.append(w)
+            seen.add(k)
+    return terms
 
-    citations = []
-    for row in db_results:
-        source_file, chunk_text = row
-        citations.append({
-            "documento": source_file,
-            "trecho": chunk_text.strip()
-        })
-    return citations
+def _term_variants(term: str) -> List[str]:
+    """Gera variantes simples p/ nomes: Andreia ~ Andrea; Joao ~ João etc."""
+    t = _strip_accents_lower(term)
+    vs = {t}
+    # Andreia -> Andrea (remove 'i' pós 'e')
+    if t.endswith("eia"):
+        vs.add(t[:-3] + "ea")
+    # normalizações mínimas
+    vs.add(t.replace("ç", "c").replace("á","a").replace("é","e").replace("í","i").replace("ó","o").replace("ú","u"))
+    return list(vs)
 
+# =======================
+# Matching de nomes (token)
+# =======================
+WORD_RE = re.compile(r"[A-Za-zÀ-ÖØ-öø-ÿ]+")
 
-def generate_answer(context: str, query: str) -> str:
-    """Usa o Gemini para gerar uma resposta baseada no contexto e na pergunta."""
-    if not GOOGLE_API_KEY:
-        return "ERRO: A chave de API do Google não foi configurada."
+def _tokenize_letters(text: str) -> List[str]:
+    return WORD_RE.findall(text or "")
 
-    model = genai.GenerativeModel(MODEL_NAME)
-    prompt = f"""
-    Você é o IA Compilot, um assistente especialista na base de conhecimento da UNESP.
-    Responda à pergunta do usuário de forma clara e objetiva, utilizando APENAS as informações do CONTEXTO fornecido.
-    Se a resposta não estiver no contexto, diga educadamente que não encontrou a informação.
+def _is_name_like(token: str) -> bool:
+    # heurística: só letras e >= 5 chars
+    return token.isalpha() and len(token) >= 5
 
-    CONTEXTO:
-    ---
-    {context}
-    ---
-    PERGUNTA DO USUÁRIO: {query}
-    RESPOSTA:
+def _name_token_match(token_norm: str, term_norm: str) -> bool:
     """
-    try:
-        response = model.generate_content(prompt)
-        return response.text
-    except Exception as e:
-        print(f"ERRO DETALHADO DO GEMINI: {e}")
-        return f"Ocorreu um erro ao chamar a API do Gemini: {e}"
-
-
-# --- FUNÇÃO PRINCIPAL DO RAG (COM THRESHOLD DE CONFIANÇA) ---
-def find_answer_for_query(query_text: str, top_k: int = 5) -> dict:
+    Aproximação para NOMES:
+      - comprimentos parecidos (diferença <= 1)
+      - alta similaridade (>= 0.86)
+      -> evita 'andre' quando pedem 'andreia' (diferença de comprimento = 2)
     """
-    Executa o pipeline RAG e RETORNA um dicionário com a resposta, citações e status.
+    if abs(len(token_norm) - len(term_norm)) > 1:
+        return False
+    sim = distance.Levenshtein.normalized_similarity(token_norm, term_norm)  # 0..1
+    return sim >= 0.86
+
+def _sentence_hits(text: str, terms: List[str]) -> List[Tuple[str, int]]:
     """
-    # --- DEBUG AGENTE: Imprime a pergunta exata que o RAG recebeu ---
-    print(f"\n\n\n--- DEBUG RAG: RECEBIDA PERGUNTA PARA BUSCA ---")
-    print(f"Query: '{query_text}'")
-    # --- FIM DEBUG ---
+    Marca sentenças/linhas que contenham um TOKEN parecido com o termo (regra de nome),
+    ou, se não for nome, usa fuzzy por frase. Retorna [(sentenca,score)].
+    """
+    out: List[Tuple[str, int]] = []
+    if not text or not terms:
+        return out
 
-    query_embedding = embeddings_model.embed_query(query_text)
-    query_vector = np.array([query_embedding], dtype=np.float32)
+    sentences = [s for s in _SENT_SPLIT.split(text) if _norm_ws(s)]
+    terms_norm_lists = [_term_variants(t) for t in terms]
+    # flattens + dedup
+    all_norms = list({tn for lst in terms_norm_lists for tn in lst})
 
-    try:
-        distances, ids = index.search(query_vector, top_k)
+    for sent in sentences:
+        s_clean = _norm_ws(sent)
+        s_norm = _strip_accents_lower(s_clean)
+        best = 0
+        # 1) tente por tokens (nomes)
+        tokens = _tokenize_letters(s_clean)
+        tokens_norm = [_strip_accents_lower(tk) for tk in tokens]
+        hit = False
+        for tn in all_norms:
+            for tk in tokens_norm:
+                if _is_name_like(tk) and _name_token_match(tk, tn):
+                    # score baseado na similaridade de nome
+                    sc = int(100 * distance.Levenshtein.normalized_similarity(tk, tn))
+                    best = max(best, sc)
+                    hit = True
+        # 2) fallback por frase (se ainda não bateu como nome)
+        if not hit:
+            for tn in all_norms:
+                sc = fuzz.partial_ratio(tn, s_norm)
+                best = max(best, sc)
 
-        # --- DEBUG RAG: Mostra os resultados brutos da busca vetorial ---
-        print("\n--- DEBUG RAG: PASSO 1 - BUSCA FAISS BRUTA ---")
-        print(f"Distâncias (scores) encontradas: {distances[0]}")
-        print(f"Índices (IDs) dos chunks encontrados: {ids[0]}")
-        print("(Lembre-se: score mais baixo = mais relevante)")
-        # --- FIM DEBUG ---
+        if best >= 86:  # limiar mais alto p/ evitar André vs Andreia
+            out.append((s_clean, best))
 
-    except Exception as e:
-        print(f"ERRO: Falha na busca do FAISS: {e}")
-        return {
-            "answer": "Desculpe, estou com um problema técnico para acessar minha base de conhecimento.",
-            "citations": [],
-            "context_found": False
-        }
+    # ordena e dedup
+    out.sort(key=lambda x: x[1], reverse=True)
+    seen, uniq = set(), []
+    for s, sc in out:
+        k = s.lower()
+        if k not in seen:
+            uniq.append((s, sc))
+            seen.add(k)
+    return uniq[:3]
 
-    faiss_indices = []
-    if ids.any() and ids[0][0] != -1:
-        filtered_results = [
-            (int(i), d) for i, d in zip(ids[0], distances[0])
-            if i != -1 and d < FAISS_SCORE_THRESHOLD
-        ]
+# =======================
+# Extração de contatos e nome
+# =======================
+def _extract_contacts(texts: List[str]) -> Dict[str, List[str]]:
+    emails, phones = set(), set()
+    for t in texts:
+        for e in EMAIL_RE.findall(t or ""):
+            emails.add(e)
+        for p in PHONE_RE.findall(t or ""):
+            phones.add(p)
+    return {"emails": sorted(emails), "phones": sorted(phones)}
 
-        # --- DEBUG RAG: Mostra o que passou pelo filtro de confiança ---
-        print("\n--- DEBUG RAG: PASSO 2 - FILTRO DE THRESHOLD ---")
-        print(f"Threshold de score definido no .env: {FAISS_SCORE_THRESHOLD}")
-        print(f"Resultados que passaram no filtro (índice, score): {filtered_results}")
-        # --- FIM DEBUG ---
+NAME_SEQ_RE = re.compile(r"([A-ZÁ-Ü][a-zá-ü]+(?:\s+[A-ZÁ-Ü][a-zá-ü]+){1,5})")
 
-        if filtered_results:
-            faiss_indices = tuple(res[0] for res in filtered_results)
+def _extract_name(snippets: List[str], term: str) -> str | None:
+    """Tenta extrair um nome próprio que contenha o termo (sem acento) nos snippets."""
+    tnorm = _strip_accents_lower(term or "")
+    for s in snippets:
+        cands = NAME_SEQ_RE.findall(s or "")
+        if not cands:
+            continue
+        # tente o candidato que contém o termo aproximado
+        best = None
+        best_sim = 0.0
+        for cand in cands:
+            # escolha o token do cand mais parecido com o termo
+            for tk in _tokenize_letters(cand):
+                sim = distance.Levenshtein.normalized_similarity(_strip_accents_lower(tk), tnorm)
+                if sim > best_sim:
+                    best_sim = sim
+                    best = cand
+        if best and best_sim >= 0.82:
+            return best
+    # fallback: primeiro candidato do primeiro snippet
+    for s in snippets:
+        cands = NAME_SEQ_RE.findall(s or "")
+        if cands:
+            return cands[0]
+    return None
 
-    if not faiss_indices:
-        # --- DEBUG RAG: Informa que a busca não retornou nada após o filtro ---
-        print(
-            "\n--- DEBUG RAG: Nenhum documento relevante encontrado após filtro. O contexto para o LLM estará VAZIO. ---")
-        # --- FIM DEBUG ---
-        print(
-            f"--- RAG: Nenhum documento relevante encontrado após filtro de score (threshold: {FAISS_SCORE_THRESHOLD}) ---")
-        return {
-            "answer": "Não encontrei informações suficientemente relevantes sobre este tópico. Você poderia reformular a pergunta?",
-            "citations": [],
-            "context_found": False
-        }
-
-    print(f"\n--- DEBUG RAG: {len(faiss_indices)} documento(s) recuperado(s) do banco de dados. ---")
-
-    conn = get_db_connection()
-    cur = conn.cursor()
-    query_sql = "SELECT source_file, chunk_text FROM document_chunks WHERE faiss_index IN %s"
-    cur.execute(query_sql, (faiss_indices,))
-    results = cur.fetchall()
-    cur.close()
-    conn.close()
-
-    context_text = "\n\n".join([f"Trecho do arquivo {row[0]}:\n{row[1]}" for row in results])
-
-    # --- DEBUG RAG: Mostra o contexto exato que será enviado para o Gemini ---
-    print("\n--- DEBUG RAG: PASSO 3 - CONTEXTO FINAL ENVIADO AO LLM ---")
-    print("===================== INÍCIO DO CONTEXTO =====================")
-    print(context_text)
-    print("====================== FIM DO CONTEXTO =======================")
-    # --- FIM DEBUG ---
-
-    final_answer = generate_answer(context_text, query_text)
-    citations = _formatar_citacoes(results, query_text)
-
+def _as_citation(doc: Document) -> Dict[str, Any]:
+    src = doc.metadata.get("source") or "desconhecido"
+    chunk = doc.metadata.get("chunk")
+    preview = _norm_ws(doc.page_content)[:180]
     return {
-        "answer": final_answer,
-        "citations": citations,
-        "context_found": True
+        "source": src,
+        "chunk": int(chunk) if (isinstance(chunk, int) or (isinstance(chunk, str) and str(chunk).isdigit())) else None,
+        "preview": preview,
     }
+
+# =======================
+# Fallback por embeddings
+# =======================
+def _top_sentences(question: str, texts: List[str], top_n: int = 3) -> List[Tuple[str, float]]:
+    sentences: List[str] = []
+    for t in texts:
+        for s in _SENT_SPLIT.split(t or ""):
+            s = _norm_ws(s)
+            if s:
+                sentences.append(s)
+    seen, uniq = set(), []
+    for s in sentences:
+        k = s.lower()
+        if k not in seen:
+            uniq.append(s)
+            seen.add(k)
+    q = _norm_ws(question)
+    scored: List[Tuple[str, float]] = [(s, fuzz.token_set_ratio(q, s) / 100.0) for s in uniq]
+    scored.sort(key=lambda x: x[1], reverse=True)
+    return scored[:top_n]
+
+# =======================
+# Pipeline principal
+# =======================
+def answer_question(
+    question: str,
+    embeddings_model: HuggingFaceEmbeddings,
+    vectorstore: FAISS,
+    *,
+    k: int = 5,
+    fetch_k: int = 20,
+) -> Dict[str, Any]:
+    q = _norm_ws(question)
+    if not q:
+        return {"answer": "Não entendi a pergunta. Pode reformular?", "citations": [], "context_found": False}
+
+    # ---- 1) Busca lexical por sentenças (ótimo p/ nomes) ----
+    terms = _candidate_terms(q)
+    try:
+        all_docs = list(getattr(vectorstore.docstore, "_dict", {}).values())
+    except Exception:
+        all_docs = []
+
+    lex_results: List[Tuple[Document, List[Tuple[str,int]], int]] = []
+    if terms and all_docs:
+        for d in all_docs:
+            hits = _sentence_hits(d.page_content or "", terms)
+            if hits:
+                best = max(sc for _, sc in hits)
+                lex_results.append((d, hits, best))
+        lex_results.sort(key=lambda x: x[2], reverse=True)
+        lex_results = lex_results[:5]
+
+    if lex_results:
+        snippets, citations = [], []
+        for doc, hits, _best in lex_results:
+            for s, _ in hits[:2]:
+                snippets.append(s)
+            citations.append(_as_citation(doc))
+            if len(snippets) >= 6:
+                break
+
+        info = _extract_contacts(snippets)
+
+        # tenta achar um nome alinhado ao termo principal (se houver só um)
+        name = None
+        name_terms = [t for t in terms if t.isalpha()]
+        if name_terms:
+            name = _extract_name(snippets, name_terms[0])
+
+        # departamento via nome do arquivo
+        dept = None
+        if citations:
+            dept = _guess_dept_from_source(citations[0]["source"])
+
+        # monta resposta curta e direta
+        parts = []
+        if name:
+            parts.append(name)
+        if dept:
+            parts.append(dept)
+        if info["phones"]:
+            parts.append(f"📞 {', '.join(info['phones'])}")
+        if info["emails"]:
+            parts.append(f"✉️ {', '.join(info['emails'])}")
+
+        answer = " — ".join(parts) if parts else " ".join(snippets[:2]).strip()
+        if not answer:
+            answer = "Encontrei referências relacionadas, mas não localizei um trecho textual claro."
+
+        return {"answer": answer, "citations": citations[:3], "context_found": True}
+
+    # ---- 2) Fallback: embeddings (MMR) ----
+    try:
+        docs: List[Document] = vectorstore.max_marginal_relevance_search(q, k=k, fetch_k=fetch_k)
+    except Exception:
+        docs = vectorstore.similarity_search(q, k=k)
+
+    if not docs:
+        return {"answer": "Não encontrei nada relacionado nos documentos indexados.", "citations": [], "context_found": False}
+
+    top_texts = [d.page_content for d in docs]
+    sent_scores = _top_sentences(q, top_texts, top_n=3)
+
+    if sent_scores and sent_scores[0][1] >= 0.45:
+        answer = " ".join([s for s, _ in sent_scores][:3])
+    else:
+        answer = _norm_ws(docs[0].page_content)
+        if len(answer) > 500:
+            answer = answer[:500].rstrip() + "..."
+
+    citations = [_as_citation(d) for d in docs[:3]]
+    return {"answer": answer, "citations": citations, "context_found": True}
