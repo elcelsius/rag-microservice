@@ -25,6 +25,7 @@ services:
       # target: etl   # <-- deixe comentado se não houver estágio "AS etl"
     container_name: ai_etl
     environment:
+      CUDA_VISIBLE_DEVICES: ""   # <— força CPU no ETL
       DATABASE_URL: "postgresql://postgres:postgres@ai_postgres:5432/ragdb"
       DATA_DIR: "/app/data"
       FAISS_OUT_DIR: "/app/vector_store/faiss_index"
