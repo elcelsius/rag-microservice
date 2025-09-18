@@ -35,12 +35,17 @@ services:
       RERANKER_CANDIDATES: "${RERANKER_CANDIDATES:-30}"
       RERANKER_TOP_K: "${RERANKER_TOP_K:-5}"
       RERANKER_MAX_LEN: "${RERANKER_MAX_LEN:-4096}"
+      MQ_ENABLED: "${MQ_ENABLED:-true}"
+      MQ_VARIANTS: "${MQ_VARIANTS:-3}"
+      CONFIDENCE_MIN: "${CONFIDENCE_MIN:-0.32}"
+      REQUIRE_CONTEXT: "${REQUIRE_CONTEXT:-true}"
     depends_on:
       ai_postgres:
         condition: service_healthy
     volumes:
       - ./data:/app/data:ro
       - vector_store:/app/vector_store
+      - ./config:/app/config:ro
     working_dir: /app
     command: ["bash", "-lc", "python3 -u scripts/etl_build_index.py && echo 'ETL done'"]
     restart: "no"
@@ -71,6 +76,7 @@ services:
       - vector_store:/app/vector_store
       - ./prompts:/app/prompts:ro
       - ./data:/app/data:ro
+      - ./config:/app/config:ro
     ports:
       - "5000:5000"
     healthcheck:

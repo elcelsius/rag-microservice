@@ -1,4 +1,5 @@
 services:
+  # Serviço do Banco de Dados PostgreSQL
   ai_postgres:
     image: postgres:15-alpine
     container_name: ai_postgres
@@ -7,10 +8,13 @@ services:
       POSTGRES_PASSWORD: postgres
       POSTGRES_DB: ragdb
     volumes:
+      # 'pgdata' é um volume nomeado para persistir os dados do banco.
       - pgdata:/var/lib/postgresql/data
     ports:
+      # Mapeia a porta 5432 do container para a porta 5432 do host.
       - "5432:5432"
     healthcheck:
+      # Verifica se o banco de dados está pronto para aceitar conexões.
       test: ["CMD-SHELL", "pg_isready -U postgres -d ragdb"]
       interval: 10s
       timeout: 5s
@@ -18,72 +22,84 @@ services:
       start_period: 20s
     restart: unless-stopped
 
+  # Serviço de ETL (Extract, Transform, Load)
   ai_etl:
     build:
       context: .
       dockerfile: Dockerfile.cpu
-      # target: etl   # <-- só descomente se seu Dockerfile tiver "FROM ... AS etl"
     container_name: ai_etl
     environment:
+      # Configurações para o processo de ETL.
       DATABASE_URL: "postgresql://postgres:postgres@ai_postgres:5432/ragdb"
-      DATA_DIR: "/app/data"
-      FAISS_OUT_DIR: "/app/vector_store/faiss_index"
+      DATA_DIR: "/app/data" # Diretório de onde os dados brutos são lidos.
+      FAISS_OUT_DIR: "/app/vector_store/faiss_index" # Onde o índice vetorial será salvo.
       EMBEDDINGS_MODEL: "${EMBEDDINGS_MODEL:-intfloat/multilingual-e5-large}"
     depends_on:
+      # Garante que o ETL só comece após o banco de dados estar saudável.
       ai_postgres:
         condition: service_healthy
     volumes:
-      - ./data:/app/data:ro
-      - vector_store:/app/vector_store
+      # Mapeia diretórios locais para dentro do container.
+      - ./data:/app/data:ro # Dados de entrada (somente leitura).
+      - vector_store:/app/vector_store # Volume para persistir o índice vetorial.
+      - ./config:/app/config:ro # Arquivos de configuração.
     working_dir: /app
+    # Comando executado ao iniciar o container.
     command: ["bash", "-lc", "python3 -u scripts/etl_build_index.py && echo 'ETL done'"]
+    # Este serviço não reinicia, ele executa a tarefa e termina.
     restart: "no"
 
+  # Serviço da API principal
   ai_projeto_api:
     build:
       context: .
       dockerfile: Dockerfile.cpu
-      # target: ai_api  # <-- só descomente se seu Dockerfile tiver "FROM ... AS ai_api"
     container_name: ai_projeto_api
     environment:
-      FAISS_STORE_DIR: "/app/vector_store/faiss_index"
+      # Configurações da API e dos modelos.
+      FAISS_STORE_DIR: "/app/vector_store/faiss_index" # Local onde a API carrega o índice.
       EMBEDDINGS_MODEL: "${EMBEDDINGS_MODEL:-intfloat/multilingual-e5-large}"
-      GOOGLE_API_KEY: "${GOOGLE_API_KEY:-}"
-      GOOGLE_MODEL:   "${GOOGLE_MODEL:-gemini-2.5-flash-lite}"
-      REQUIRE_LLM_READY: "${REQUIRE_LLM_READY:-false}"
+      GOOGLE_API_KEY: "${GOOGLE_API_KEY:-}" # Chave da API do Google Gemini.
+      GOOGLE_MODEL:   "${GOOGLE_MODEL:-gemini-1.5-flash-latest}"
+      # ... outras configurações para Reranker, Multi-Query, etc.
       RERANKER_ENABLED: "${RERANKER_ENABLED:-true}"
       RERANKER_NAME: "${RERANKER_NAME:-jinaai/jina-reranker-v2-base-multilingual}"
-      RERANKER_CANDIDATES: "${RERANKER_CANDIDATES:-30}"
-      RERANKER_TOP_K: "${RERANKER_TOP_K:-5}"
-      RERANKER_MAX_LEN: "${RERANKER_MAX_LEN:-4096}"
     depends_on:
+      # A API só inicia após o ETL ter sido concluído com sucesso.
       ai_etl:
         condition: service_completed_successfully
     volumes:
-      - vector_store:/app/vector_store
-      - ./prompts:/app/prompts:ro
+      - vector_store:/app/vector_store # Acessa o mesmo volume do índice vetorial.
+      - ./prompts:/app/prompts:ro # Mapeia os templates de prompt.
       - ./data:/app/data:ro
+      - ./config:/app/config:ro
     ports:
+      # Expõe a API na porta 5000 do host.
       - "5000:5000"
     healthcheck:
+      # Verifica se a API está online e pronta para receber requisições.
       test: ["CMD", "python3", "-c", "import json,urllib.request,sys; d=json.loads(urllib.request.urlopen('http://localhost:5000/healthz').read().decode()); sys.exit(0 if (d.get('ready') is True) else 1)"]
       interval: 10s
       timeout: 5s
       retries: 20
 
+  # Serviço da Interface Web (UI)
   ai_web_ui:
     image: nginx:1.27-alpine
     container_name: ai_web_ui
     depends_on:
+      # A UI só inicia quando a API estiver saudável.
       ai_projeto_api:
         condition: service_healthy
     ports:
-      - "8080:80"
+      - "8080:80" # Expõe a UI na porta 8080.
     volumes:
+      # Mapeia os arquivos estáticos (HTML/JS/CSS) e a configuração do Nginx.
       - ./web_ui/html:/usr/share/nginx/html:ro
       - ./web_ui/conf.d:/etc/nginx/conf.d:ro
     restart: unless-stopped
 
+# Declaração dos volumes nomeados para persistência de dados.
 volumes:
   pgdata:
   vector_store:

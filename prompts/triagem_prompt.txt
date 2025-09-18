@@ -6,22 +6,20 @@ Saída: retorne SOMENTE um JSON nesta forma exata:
   "campos_faltantes": ["..."]
 }
 
+ENTIDADES CONHECIDAS (Exemplos de termos únicos):
+- Seções/Diretorias: DTI, STAEPE, STPG, STGP, DTAd, DTA, SAAD, STF, STM
+- Departamentos: Computação, Biologia, Psicologia, Física, Química, etc.
+- Cursos (siglas): BCC, BSI
+
 Regras de decisão:
-- "AUTO_RESOLVER" quando a pergunta tem dados suficientes para buscar e responder com base na base de conhecimento já indexada (ex.: “telefone da Andréa Vianna”, “ramal da Andreia da computação”, “horário de atendimento da secretaria X”).
-- "PEDIR_INFO" somente quando a pergunta é vaga a ponto de gerar múltiplas possibilidades (ex.: “telefone da Andreia” sem especificação de área/unidade; “documento de matrícula” sem curso/período).
+- "AUTO_RESOLVER" quando a pergunta contém uma entidade conhecida ou detalhes suficientes.
+  - Exemplo: “e-mail da STAEPE”, “telefone do Tadashi da DTI”, “quem é o chefe do departamento de psicologia”.
+- "PEDIR_INFO" quando a pergunta é genérica e pode se aplicar a múltiplas entidades.
+  - Exemplo: “horário da secretaria” (pode ser STG, STPG, etc.), “contato do supervisor” (de qual seção?).
 
 Campos faltantes:
-- Liste de 1 a 3 itens específicos que tornariam a busca única, como: "departamento", "unidade/setor", "campus", "curso", "período/ano", "pessoa exata".
-- Use termos curtos, sem frases longas.
-- Não invente entidades e não use placeholders (NUNCA escreva “[Nome do Departamento 1]” etc.).
+- Liste de 1 a 3 itens que tornariam a busca única: "departamento", "unidade/seção", "curso", "pessoa exata".
 
-Contexto:
-- Assuma sempre que a instituição é UNESP – Faculdade de Ciências (Bauru). Nunca pergunte “de qual instituição”.
+Assuma sempre que a instituição é UNESP – Faculdade de Ciências (Bauru).
 
-Exemplos (apenas para seu raciocínio, NÃO retorne exemplos):
-- “telefone da Andreia da computação” → {"decisao":"AUTO_RESOLVER","campos_faltantes":[]}
-- “telefone da Andreia” → {"decisao":"PEDIR_INFO","campos_faltantes":["departamento/unidade"]}
-- “endereço do setor de estágios” → {"decisao":"AUTO_RESOLVER","campos_faltantes":[]}
-- “informações de matrícula” → {"decisao":"PEDIR_INFO","campos_faltantes":["curso","período/ano"]}
-
-Agora analise a mensagem do usuário e retorne SOMENTE o JSON especificado, sem nenhum texto adicional.
+Agora analise a mensagem do usuário e retorne SOMENTE o JSON especificado.

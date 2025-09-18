@@ -1,14 +1,17 @@
 #!/bin/bash
 # Inicia todo o ambiente em MODO CPU e abre o site no navegador.
 
-echo "🚀 Iniciando todos os serviços (Postgres, API, Web UI)..."
+echo "🚀 Iniciando todos os serviços (Postgres, API, Web UI) em modo CPU..."
 cd "$(dirname "$0")/.."
-docker-compose -f docker-compose.yml -f docker-compose.cpu.yml up --build -d
+
+# Sobe os contêineres usando a configuração base e a de CPU.
+# O arquivo docker-compose.cpu.yml sobrescreve ou adiciona configurações para rodar sem GPU.
+docker compose -f docker-compose.yml -f docker-compose.cpu.yml up --build -d
 
 echo ""
 echo "⏳ Aguardando o servidor web ficar pronto na porta 8080..."
 
-# Loop que espera o servidor web responder.
+# Loop de verificação para garantir que o site só seja aberto quando estiver pronto.
 while ! curl --silent --head --fail http://localhost:8080 > /dev/null; do
     echo -n "."
     sleep 2
@@ -18,7 +21,7 @@ echo ""
 echo "✅ Servidor web está no ar!"
 echo "🌐 Abrindo o site no seu navegador padrão..."
 
-# Comando para abrir a URL no navegador padrão do Windows a partir do WSL2.
+# Abre a URL no navegador do Windows a partir do WSL.
 explorer.exe http://localhost:8080
 
 echo ""

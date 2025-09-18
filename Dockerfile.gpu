@@ -1,30 +1,41 @@
+# Estágio 1: Base para GPU
+# Define a imagem base, a mesma do ambiente CPU.
 FROM python:3.11-slim AS base
+
 WORKDIR /app
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
+# Instala as mesmas dependências de sistema.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential git curl poppler-utils tesseract-ocr \
  && rm -rf /var/lib/apt/lists/*
 
-# Torch CUDA (ajuste cu121 -> sua versão de CUDA)
+# --- Instalação do PyTorch com Suporte a CUDA ---
+# Esta é a principal diferença em relação ao Dockerfile.cpu.
+# Instala o PyTorch, torchvision e torchaudio a partir do índice de download oficial do PyTorch,
+# especificando a versão compilada para CUDA 12.1 (cu121).
+# ATENÇÃO: A versão do CUDA (ex: cu121) deve ser compatível com o driver da sua GPU Host.
 RUN python3 -m pip install --no-cache-dir --upgrade pip && \
     pip3 install --index-url https://download.pytorch.org/whl/cu121 torch torchvision torchaudio
 
-# requirements GPU (herdam do base comum)
+# Instala as dependências Python para o ambiente de GPU.
+# O requirements-gpu.txt geralmente inclui 'faiss-gpu' e outras libs específicas.
 COPY requirements.txt /tmp/requirements.txt
 COPY requirements-gpu.txt /tmp/requirements-gpu.txt
 RUN pip3 install --no-cache-dir -r /tmp/requirements-gpu.txt
 
-# código
+# Copia o código da aplicação para o container.
 COPY . /app
 
-# ===== estágio para ETL =====
+# ===== Estágio 2: Imagem para o ETL (GPU) =====
+# Usa a base com dependências de GPU para o processo de ETL.
 FROM base AS etl
 WORKDIR /app
 CMD ["bash", "-lc", "python3 -u scripts/etl_build_index.py"]
 
-# ===== estágio para API =====
+# ===== Estágio 3: Imagem para a API (GPU) =====
+# Usa a base com dependências de GPU para a API.
 FROM base AS ai_api
 WORKDIR /app
 EXPOSE 5000

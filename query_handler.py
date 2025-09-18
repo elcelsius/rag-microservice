@@ -5,7 +5,8 @@
 from __future__ import annotations
 import re, unicodedata
 import os
-from typing import Any, Dict, List, Tuple, Optional
+import math
+from typing import Any, Dict, List, Tuple, Optional, Iterable, Set
 
 from rapidfuzz import fuzz, distance
 from langchain_community.vectorstores import FAISS
@@ -15,12 +16,61 @@ from llm_client import load_prompt, call_llm
 from sentence_transformers import CrossEncoder
 
 # ==== Configurações do Reranker ====
+# Ativa ou desativa o uso do reranker para reordenar os resultados da busca.
 RERANKER_ENABLED = os.getenv("RERANKER_ENABLED", "true").lower() == "true"
+# Nome do modelo CrossEncoder a ser usado para o rerank.
 RERANKER_NAME = os.getenv("RERANKER_NAME", "jinaai/jina-reranker-v2-base-multilingual")
+# Número de documentos candidatos a serem enviados para o reranker.
 RERANKER_CANDIDATES = int(os.getenv("RERANKER_CANDIDATES", "30"))
+# Número de documentos a serem retornados pelo reranker (top K).
 RERANKER_TOP_K = int(os.getenv("RERANKER_TOP_K", "5"))
+# Comprimento máximo da sequência para o modelo reranker.
 RERANKER_MAX_LEN = int(os.getenv("RERANKER_MAX_LEN", "4096"))
 
+# ==== Configurações de Multi-Query e Confiança ====
+# Ativa ou desativa a geração de múltiplas variações da pergunta do usuário para busca.
+MQ_ENABLED = os.getenv("MQ_ENABLED", "true").lower() == "true"
+# Número de variações da pergunta a serem geradas.
+MQ_VARIANTS = int(os.getenv("MQ_VARIANTS", "3"))
+# Limiar mínimo de confiança do reranker para considerar uma resposta válida.
+CONFIDENCE_MIN = float(os.getenv("CONFIDENCE_MIN", "0.32"))
+# Exige que um contexto seja encontrado nos documentos para gerar uma resposta.
+REQUIRE_CONTEXT = os.getenv("REQUIRE_CONTEXT", "true").lower() == "true"
+
+# === Dicionário externo (departamentos, aliases, sinônimos, boosts) ===
+import yaml  # requer PyYAML
+
+TERMS_PATH = os.getenv("TERMS_YAML", "/app/config/ontology/terms.yml")
+
+
+def load_terms(path: str = TERMS_PATH):
+    """
+    Carrega um dicionário de termos (departamentos, aliases, sinônimos) de um arquivo YAML.
+    Isso centraliza a configuração e permite ajustes sem alterar o código.
+    """
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = yaml.safe_load(f) or {}
+        # Garante que as chaves principais existam para evitar erros.
+        data.setdefault("departments", {})
+        data.setdefault("aliases", {})
+        data.setdefault("synonyms", {})
+        data.setdefault("boosts", {})
+        return data
+    except FileNotFoundError:
+        print(f"[DICT] Arquivo não encontrado: {path} — usando defaults vazios.")
+        return {"departments": {}, "aliases": {}, "synonyms": {}, "boosts": {}}
+
+
+# Carrega os termos na inicialização do módulo.
+TERMS = load_terms()
+DEPARTMENTS = TERMS["departments"]  # dict slug -> label canônica
+ALIASES = TERMS["aliases"]  # dict termo -> [variações]
+SYNONYMS = TERMS["synonyms"]  # dict sigla -> [expansões]
+BOOSTS = TERMS["boosts"]  # dict de boosts opcionais
+print(f"[DICT] departamentos={len(DEPARTMENTS)} aliases={len(ALIASES)} synonyms={len(SYNONYMS)}")
+
+# Variável global para armazenar o modelo do reranker e evitar recarregá-lo.
 _reranker_model = None
 
 
@@ -29,35 +79,171 @@ def _get_reranker():
     global _reranker_model
     if _reranker_model is None and RERANKER_ENABLED:
         # carrega uma vez, fica em memória
+        print(f"[INFO] Carregando o modelo reranker: {RERANKER_NAME}")
         _reranker_model = CrossEncoder(RERANKER_NAME, max_length=RERANKER_MAX_LEN)
     return _reranker_model
 
 
-def _apply_rerank(query: str, docs: List[Document]) -> List[Document]:
+def _apply_rerank(query: str, docs: List[Document]) -> Tuple[List[Document], List[float]]:
     """
-    Reclassifica uma lista de documentos com base na sua relevância para a consulta.
+    Reclassifica uma lista de documentos com base na sua relevância para a consulta,
+    aplicando um bônus (boost) para documentos que mencionam departamentos citados na pergunta.
 
     Args:
         query (str): A consulta do usuário.
         docs (List[Document]): Lista de documentos do LangChain a serem reranqueados.
 
     Returns:
-        List[Document]: A lista de documentos reordenada e truncada para o top_k.
+        Tuple[List[Document], List[float]]: Uma tupla contendo a lista de documentos reordenada
+                                            e a lista de seus respectivos scores de confiança.
     """
-    if not (RERANKER_ENABLED and docs):
-        return docs[:min(len(docs), RERANKER_TOP_K)]
+    # Retorna listas vazias se não houver documentos para processar.
+    if not docs:
+        return [], []
+    # Se o reranker estiver desabilitado, retorna os top K documentos com score 0.0.
+    if not RERANKER_ENABLED:
+        top = docs[:min(len(docs), RERANKER_TOP_K)]
+        return top, [0.0] * len(top)
+
     rr = _get_reranker()
+    # Se o modelo não puder ser carregado, retorna os top K documentos com score 0.0.
     if rr is None:
-        return docs[:min(len(docs), RERANKER_TOP_K)]
+        top = docs[:min(len(docs), RERANKER_TOP_K)]
+        return top, [0.0] * len(top)
 
+    # Cria pares de (consulta, conteúdo do documento) para o modelo.
     pairs = [(query, getattr(d, "page_content", str(d))) for d in docs]
-    scores = rr.predict(pairs)  # maior = melhor
+    # O modelo prediz os scores. Modelos como Jina v2 retornam scores de 0 a 1 (maior = melhor).
+    scores = rr.predict(pairs)
 
-    ranked = sorted(zip(docs, scores), key=lambda x: float(x[1]), reverse=True)
-    return [d for d, _ in ranked[:RERANKER_TOP_K]]
+    # --- boost por departamento (leve) ---
+    # Identifica slugs de departamento na pergunta para dar um bônus aos documentos correspondentes.
+    wanted = set(_dept_slugs_in_question(query))
+    boosted: List[Tuple[object, float]] = []
+    for d, s in zip(docs, scores):
+        b = float(s)
+        # Se algum slug de departamento foi encontrado na pergunta...
+        if wanted:
+            meta = getattr(d, "metadata", {}) or {}
+            # Concatena os campos de metadados onde o departamento pode ser encontrado.
+            src = " ".join([
+                str(meta.get("source") or ""),
+                str(meta.get("file") or ""),
+                str(meta.get("department") or ""),
+            ])
+            src_norm = _strip_accents_lower(src)
+            # Verifica se algum dos slugs desejados está nos metadados do documento.
+            if any(slug in src_norm for slug in wanted):
+                # Aplica um boost padrão para o documento correspondente.
+                b += 0.05
+                # Aplica um boost adicional opcional, configurado no arquivo YAML.
+                # Ex: boosts.department.<slug>
+                dep_boosts = (BOOSTS.get("department") or {})
+                for slug in wanted:
+                    w = dep_boosts.get(slug)
+                    if isinstance(w, (int, float)):
+                        # O valor no YAML é tratado como um percentual (ex: 1.5 -> +0.015)
+                        b += float(w) * 0.01
+        boosted.append((d, b))
+
+    # Ordena os documentos com base nos scores (possivelmente com boost).
+    ranked = sorted(boosted, key=lambda x: float(x[1]), reverse=True)
+
+    # Seleciona os top K pares.
+    top_pairs = ranked[:RERANKER_TOP_K]
+    if not top_pairs:
+        print(f"[RERANK/BOOST] wanted={list(wanted)} top=0")
+        return [], []
+
+    # Separa os documentos e os scores em duas listas distintas.
+    top_docs = [d for d, s in top_pairs]
+    top_scores = [float(s) for d, s in top_pairs]
+
+    # Log para depuração do processo de rerank e boost.
+    print(f"[RERANK/BOOST] wanted={list(wanted)} top={len(top_docs)}")
+
+    return top_docs, top_scores
 
 
-# ==== Utilitários de Processamento de Texto ====
+# ==== Utilitários de Geração de Multi-Query e Processamento de Texto ====
+
+def _dedupe_preserve_order(items: Iterable, key=lambda x: x) -> list:
+    """
+    Remove duplicatas de uma lista/iterável, preservando a ordem original dos elementos.
+
+    Args:
+        items (Iterable): A lista de itens a serem desduplicados.
+        key (function): Uma função para extrair a chave de comparação de cada item.
+
+    Returns:
+        list: Uma nova lista sem duplicatas.
+    """
+    seen: Set = set()
+    out = []
+    for it in items:
+        k = key(it)
+        if k in seen:
+            continue
+        seen.add(k)
+        out.append(it)
+    return out
+
+
+def _gen_variants_local(q: str) -> List[str]:
+    """
+    Gera variações simples e determinísticas de uma pergunta em português.
+    Serve como um fallback caso a geração via LLM falhe.
+    """
+    qn = q.strip()
+    base = [qn]
+    # Variações comuns: minúsculas, sem interrogação, expandindo "qual" para "qual é", etc.
+    extra = [
+        qn.lower(),
+        qn.replace("?", "").strip(),
+        qn.replace("quais", "quais são").replace("qual", "qual é"),
+    ]
+    return _dedupe_preserve_order(base + extra)
+
+
+def _gen_multi_queries(user_query: str, n: int, llm=None) -> List[str]:
+    """
+    Gera variações para a busca:
+    1) variações locais simples
+    2) expansões vindas de SYNONYMS (do YAML)
+    3) (opcional) variações via LLM, se um wrapper for passado em `llm`
+    """
+    n = max(1, n)
+
+    # 1) variações locais
+    base_local = _gen_variants_local(user_query)
+
+    # 2) variações por sinônimos do dicionário
+    s_norm = _strip_accents_lower(user_query)
+    syn_vars = []
+    for key, exps in SYNONYMS.items():
+        if key in s_norm:
+            syn_vars.extend(exps)
+
+    # 3) (opcional) pedir variantes ao LLM (se houver wrapper compatível)
+    llm_vars = []
+    if llm is not None:
+        try:
+            prompt = (
+                "Gere variações curtas e diferentes (1 por linha) desta pergunta, "
+                "mantendo o sentido, para busca em base de conhecimento:\n"
+                f"{user_query}\n"
+                f"(gere no máximo {n})"
+            )
+            txt = llm.generate_variants(prompt, n)  # adapte ao seu wrapper, se existir
+            llm_vars = [ln.strip(" -•\t") for ln in txt.splitlines() if ln.strip()]
+        except Exception:
+            llm_vars = []
+
+    # 4) mescla e corta em n
+    merged = _dedupe_preserve_order([user_query] + base_local + syn_vars + llm_vars)
+    return merged[:n]
+
+
 _SENT_SPLIT = re.compile(r"(?<=[\.\!\?\;\:])\s+|\n+")  # Regex para dividir texto em sentenças
 _WS = re.compile(r"\s+")  # Regex para normalizar espaços em branco
 EMAIL_RE = re.compile(r"[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}", re.IGNORECASE)  # Regex para encontrar e-mails
@@ -69,24 +255,6 @@ STOP = {
     "que", "qual", "quais", "sobre", "para", "como", "onde", "quem",
     "contato", "email", "e-mail", "fone", "telefone", "ramal",
     "da", "de", "do", "um", "uma", "o", "a", "os", "as"
-}
-
-# Rótulos de departamentos/unidades e suas chaves normalizadas para busca.
-DEPT_LABELS = [
-    ("computacao", "Computação"),
-    ("biologia", "Biologia"),
-    ("stpg", "STPG"),
-    ("staepe", "STAEPE"),
-    ("dti", "DTI"),
-    ("administracao", "Administração"),
-    ("congregacao", "Congregação"),
-    ("diretoria", "Diretoria Técnica Acadêmica"),
-]
-
-# Aliases para nomes comuns, usados para normalização e busca flexível.
-ALIASES = {
-    "andreia": ["andrea", "andria", "andréia", "andréa", "andreá"],
-    "andréa": ["andreia", "andrea", "andréia"],
 }
 
 
@@ -109,8 +277,9 @@ def _tokenize_letters(text: str) -> List[str]:
 def _guess_dept_from_source(src: str) -> Optional[str]:
     """Tenta adivinhar o departamento a partir do texto da fonte do documento."""
     s = _strip_accents_lower(src or "")
-    for key, label in DEPT_LABELS:
-        if key in s:
+    # percorre os slugs carregados do YAML
+    for slug, label in DEPARTMENTS.items():
+        if slug in s:
             return label
     return None
 
@@ -119,10 +288,23 @@ def _dept_hints_in_question(q: str) -> List[str]:
     """Identifica possíveis departamentos mencionados na pergunta do usuário."""
     s = _strip_accents_lower(q)
     hints = []
-    for key, label in DEPT_LABELS:
-        if key in s and label not in hints:
+    for slug, label in DEPARTMENTS.items():
+        if slug in s and label not in hints:
             hints.append(label)
     return hints
+
+
+def _dept_slugs_in_question(q: str) -> List[str]:
+    """
+    Identifica slugs de departamento (ex: 'computacao', 'biologia') na pergunta do usuário.
+    Usa o dicionário DEPARTMENTS carregado do arquivo YAML para encontrar correspondências.
+    """
+    s = _strip_accents_lower(q or "")
+    hits: List[str] = []
+    for slug in DEPARTMENTS.keys():
+        if slug in s:
+            hits.append(slug)
+    return hits
 
 
 # ==== Funções de Extração de Termos ====
@@ -146,7 +328,7 @@ def _term_variants(term: str) -> List[str]:
     """Gera variantes de um termo (ex: com/sem acento, aliases) para busca flexível."""
     t = _strip_accents_lower(term)
     vs = {t}
-    # Adiciona aliases de nomes comuns
+    # Adiciona aliases de nomes comuns (agora carregados do YAML)
     for base, al in ALIASES.items():
         if t == base or t in al:
             vs.update([base] + al)
@@ -286,7 +468,7 @@ def _top_sentences(question: str, texts: List[str], top_n: int = 3) -> List[Tupl
 
 
 def _context_window_around_name(doc_text: str, person_name: str, chars_before: int = 220, chars_after: int = 300) -> \
-Optional[str]:
+        Optional[str]:
     """Extrai uma janela de contexto de texto ao redor de um nome de pessoa."""
     if not (doc_text and person_name):
         return None
@@ -310,15 +492,7 @@ _RESPOSTA_PROMPT = load_prompt("prompts/resposta_final_prompt.txt")
 
 
 def _llm_triage(question: str, signals: Dict[str, Any]) -> Dict[str, Any]:
-    """Usa o LLM para fazer a triagem da pergunta, decidindo se deve responder ou pedir mais informações.
-
-    Args:
-        question (str): A pergunta original do usuário.
-        signals (Dict[str, Any]): Sinais extraídos da pergunta para auxiliar na triagem.
-
-    Returns:
-        Dict[str, Any]: Um dicionário contendo a ação decidida ("AUTO_RESOLVER" ou "PEDIR_INFO") e uma possível pergunta de esclarecimento.
-    """
+    """Usa o LLM para fazer a triagem da pergunta, decidindo se deve responder ou pedir mais informações."""
     if not _TRIAGE_PROMPT:
         return {"action": "AUTO_RESOLVER", "ask": ""}
     user_payload = f"Pergunta: {question}\n\nSinais:\n{signals}"
@@ -329,16 +503,7 @@ def _llm_triage(question: str, signals: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _llm_pedir_info(question: str, options: List[str], prefer_attr: str = "departamento") -> str:
-    """Usa o LLM para gerar uma pergunta de esclarecimento ao usuário.
-
-    Args:
-        question (str): A pergunta original do usuário.
-        options (List[str]): Opções de termos encontrados que podem precisar de esclarecimento.
-        prefer_attr (str): Atributo preferencial para o qual o esclarecimento é solicitado (ex: "departamento").
-
-    Returns:
-        str: A pergunta de esclarecimento gerada pelo LLM.
-    """
+    """Usa o LLM para gerar uma pergunta de esclarecimento ao usuário."""
     if not _PEDIR_INFO_PROMPT:
         if options:
             opts = ", ".join(options[:3])
@@ -351,17 +516,7 @@ def _llm_pedir_info(question: str, options: List[str], prefer_attr: str = "depar
 
 def _format_direct(name: Optional[str], dept: Optional[str], contacts: Dict[str, List[str]],
                    context_snippets: List[str]) -> str:
-    """Formata uma resposta direta com as informações encontradas, sem usar o LLM.
-
-    Args:
-        name (Optional[str]): Nome da pessoa encontrada.
-        dept (Optional[str]): Departamento encontrado.
-        contacts (Dict[str, List[str]]): Contatos (e-mails, telefones) encontrados.
-        context_snippets (List[str]): Trechos de contexto relevantes.
-
-    Returns:
-        str: A resposta formatada.
-    """
+    """Formata uma resposta direta com as informações encontradas, sem usar o LLM."""
     parts = []
     if name: parts.append(name)
     if dept: parts.append(dept)
@@ -373,18 +528,7 @@ def _format_direct(name: Optional[str], dept: Optional[str], contacts: Dict[str,
 
 def _llm_resposta_final(question: str, context_snippets: List[str], name: Optional[str], dept: Optional[str],
                         contacts: Dict[str, List[str]]) -> str:
-    """Usa o LLM para gerar uma resposta final em linguagem natural, com base no contexto e metadados extraídos.
-
-    Args:
-        question (str): A pergunta original do usuário.
-        context_snippets (List[str]): Trechos de contexto relevantes.
-        name (Optional[str]): Nome da pessoa encontrada.
-        dept (Optional[str]): Departamento encontrado.
-        contacts (Dict[str, List[str]]): Contatos (e-mails, telefones) encontrados.
-
-    Returns:
-        str: A resposta final gerada pelo LLM.
-    """
+    """Usa o LLM para gerar uma resposta final em linguagem natural, com base no contexto e metadados extraídos."""
     if not _RESPOSTA_PROMPT:
         return _format_direct(name, dept, contacts, context_snippets)
     ctx = "\n\n".join(f"- {s}" for s in context_snippets[:6])
@@ -400,30 +544,33 @@ def _llm_resposta_final(question: str, context_snippets: List[str], name: Option
 # ==== Pipeline Principal de Resposta ====
 def answer_question(question: str, embeddings_model: HuggingFaceEmbeddings, vectorstore: FAISS, *, k: int = 5,
                     fetch_k: int = 20) -> Dict[str, Any]:
-    """Pipeline principal para responder a uma pergunta usando uma abordagem híbrida (busca lexical e vetorial).
+    """
+    Pipeline principal para responder a uma pergunta usando uma abordagem híbrida (busca lexical e vetorial).
 
     Args:
         question (str): A pergunta do usuário.
-        embeddings_model (HuggingFaceEmbeddings): O modelo de embeddings para gerar vetores.
+        embeddings_model (HuggingFaceEmbeddings): O modelo de embeddings para gerar vetores (não usado diretamente aqui, mas parte da arquitetura).
         vectorstore (FAISS): O vetorstore FAISS para busca de documentos.
         k (int): Número de documentos a serem retornados pela busca vetorial (usado como fallback se o reranker estiver desabilitado).
-        fetch_k (int): Número de documentos a serem buscados inicialmente para MMR.
+        fetch_k (int): Número de documentos a serem buscados inicialmente para MMR (não mais usado diretamente, mas mantido por compatibilidade).
 
     Returns:
-        Dict[str, Any]: Um dicionário contendo a resposta, citações e se o contexto foi encontrado.
+        Dict[str, Any]: Um dicionário contendo a resposta, citações, confiança e se o contexto foi encontrado.
     """
     q = _norm_ws(question)
     if not q:
         return {"answer": "Não entendi a pergunta. Pode reformular?", "citations": [], "context_found": False}
 
+    # Estratégia 1: Busca Lexical por Nomes (rápida e precisa para contatos)
     try:
         all_docs: List[Document] = list(getattr(vectorstore.docstore, "_dict", {}).values())
     except Exception:
         all_docs = []
-    dept_hints = _dept_hints_in_question(q)
 
+    dept_hints = _dept_hints_in_question(q)
     terms = _candidate_terms(q)
     lex_hits: List[Tuple[Document, List[Tuple[str, int]], int]] = []
+
     if terms and all_docs:
         for d in all_docs:
             src = (d.metadata.get("source") or "").lower()
@@ -436,6 +583,7 @@ def answer_question(question: str, embeddings_model: HuggingFaceEmbeddings, vect
         lex_hits = lex_hits[:6]
 
     if lex_hits:
+        # Se a busca lexical encontrou candidatos fortes, processa-os.
         sentence_snippets: List[str] = []
         citations = []
         for doc, hits, _best in lex_hits:
@@ -449,15 +597,9 @@ def answer_question(question: str, embeddings_model: HuggingFaceEmbeddings, vect
         name = _extract_name(sentence_snippets, name_terms[0]) if name_terms else None
         dept = _guess_dept_from_source(citations[0]["source"]) if citations else None
 
-        # Janela de contexto extra ao redor do nome para encontrar mais informações
         context_snippets = list(sentence_snippets)
         if name and (not contacts["phones"]):
-            ref_doc = None
-            for d, hits, _b in lex_hits:
-                if any(name in s for s, _ in hits):
-                    ref_doc = d;
-                    break
-            ref_doc = ref_doc or lex_hits[0][0]
+            ref_doc = lex_hits[0][0]  # Usa o documento de maior score como referência
             win = _context_window_around_name(ref_doc.page_content or "", name, 220, 300)
             if win:
                 context_snippets.insert(0, win)
@@ -466,57 +608,102 @@ def answer_question(question: str, embeddings_model: HuggingFaceEmbeddings, vect
                 emails = list(dict.fromkeys(contacts["emails"] + more["emails"]))
                 contacts = {"phones": phones, "emails": emails}
 
-        triage_signals = {
-            "dept_hints_in_question": dept_hints,
-            "candidates_found": len(lex_hits),
-            "have_name": bool(name),
-            "phones_found": contacts.get("phones", []),
-            "emails_found": contacts.get("emails", []),
-        }
+        # Triagem com LLM para decidir se pede esclarecimento.
+        triage_signals = {"dept_hints_in_question": dept_hints, "candidates_found": len(lex_hits),
+                          "have_name": bool(name)}
         tri = _llm_triage(q, triage_signals)
         if tri.get("action") == "PEDIR_INFO":
-            options: List[str] = []
-            if len(lex_hits) >= 2:
-                for d, hits, _b in lex_hits[:3]:
-                    nm = _extract_name([hits[0][0]], name_terms[0] if name_terms else "")
-                    if nm and nm not in options:
-                        options.append(nm)
+            options = [nm for d, hits, _b in lex_hits[:3] if
+                       (nm := _extract_name([hits[0][0]], name_terms[0] if name_terms else "")) and nm]
             ask = tri.get("ask") or _llm_pedir_info(q, options, prefer_attr="departamento")
             return {"answer": ask, "citations": [], "context_found": False, "needs_clarification": True}
 
+        # Gera a resposta final com base nos dados extraídos.
         final = _llm_resposta_final(q, context_snippets or sentence_snippets, name, dept, contacts)
         return {"answer": final, "citations": citations[:3], "context_found": True}
 
-    # Fallback para busca por embeddings se a busca lexical falhar
+    # Estratégia 2: Fallback para Busca Vetorial com Multi-Query e Rerank
+    # Este bloco é executado se a busca lexical não encontrar resultados.
 
-    # Busca um número maior de candidatos para o reranker
-    num_candidates = RERANKER_CANDIDATES if RERANKER_ENABLED else k
+    k_candidates_total = RERANKER_CANDIDATES if RERANKER_ENABLED else 10
 
-    try:
-        # Garante que fetch_k seja grande o suficiente para MMR
-        mmr_fetch_k = max(fetch_k, num_candidates)
-        docs: List[Document] = vectorstore.max_marginal_relevance_search(q, k=num_candidates, fetch_k=mmr_fetch_k)
-    except Exception:
-        docs = vectorstore.similarity_search(q, k=num_candidates)
+    # 1. Gera variações da pergunta para uma busca mais abrangente.
+    queries = [q]
+    if MQ_ENABLED:
+        queries = _gen_multi_queries(q, MQ_VARIANTS)
 
-    # Aplica o rerank para reordenar e selecionar os melhores documentos
-    docs = _apply_rerank(q, docs)
+    # 2. Distribui o "orçamento" de busca entre as queries geradas.
+    per_q = max(3, math.ceil(k_candidates_total / max(1, len(queries))))
+
+    # 3. Busca para cada query e mescla os resultados.
+    cands = []
+    for query_variant in queries:
+        try:
+            hits = vectorstore.similarity_search(query_variant, k=per_q)
+            cands.extend(hits)
+        except Exception as e:
+            print(f"[ERROR] Falha na busca vetorial para a query '{query_variant}': {e}")
+            continue
+
+    def _doc_key(d: Document) -> tuple:
+        # Cria uma chave única para cada documento para desduplicação.
+        src = d.metadata.get("source", "")
+        chk = d.metadata.get("chunk")
+        return (src, chk, d.page_content[:64])
+
+    cands = _dedupe_preserve_order(cands, key=_doc_key)
+
+    # 4. Reordena os candidatos com o reranker e obtém os scores de confiança.
+    docs, scores = _apply_rerank(q, cands)
+
+    # Função Sigmoid para normalizar scores, se necessário.
+    def _sigmoid(x: float) -> float:
+        try:
+            return 1.0 / (1.0 + math.exp(-float(x)))
+        except (OverflowError, ValueError):
+            return 0.0
+
+    # Calcula a confiança final. Usa o score máximo do reranker.
+    if scores:
+        max_s = float(max(scores))
+        # O Jina v2 já retorna scores em [0, 1]. Se não, o sigmoid normalizaria.
+        conf = max_s if (0.0 <= max_s <= 1.0) else _sigmoid(max_s)
+    else:
+        conf = 0.0
+
+    # Log de diagnóstico para a busca vetorial.
     print(
-        f"[RERANK] enabled={RERANKER_ENABLED} name={RERANKER_NAME} k_candidates={num_candidates} top_k={RERANKER_TOP_K} final={len(docs)}")
+        f"[RETRIEVE] mq={MQ_ENABLED} variants={len(queries)} merged={len(cands)} reranked={len(docs)} conf={conf:.3f}")
 
-    if not docs:
-        return {"answer": "Não encontrei nada relacionado nos documentos indexados.", "citations": [],
-                "context_found": False}
+    # 5. Verifica se a confiança é suficiente para responder.
+    if (not docs) or (conf < CONFIDENCE_MIN):
+        if REQUIRE_CONTEXT:
+            # Retorna uma resposta segura se a confiança for muito baixa.
+            return {
+                "answer": "Não encontrei informação suficiente nos documentos para responder com segurança.",
+                "citations": [],
+                "context_found": False,
+                "confidence": conf,
+            }
 
+    # 6. Se a confiança for aceitável, processa os documentos para a resposta final.
     top_texts = [d.page_content for d in docs]
     sent_scores = _top_sentences(q, top_texts, top_n=3)
+
     if sent_scores and sent_scores[0][1] >= 0.45:
-        body = " ".join([s for s, _ in sent_scores][:3])
+        # Usa as sentenças mais relevantes se a similaridade for boa.
+        context_snippets = [s for s, _ in sent_scores]
     else:
+        # Caso contrário, usa o início do documento principal como contexto.
         body = _norm_ws(docs[0].page_content)
         if len(body) > 500: body = body[:500].rstrip() + "..."
+        context_snippets = [body]
+
     citations = [_as_citation(d) for d in docs[:3]]
-    final = _llm_resposta_final(q, [s for s, _ in sent_scores] if sent_scores else [body], None, None,
-                                {"emails": [], "phones": []})
-    if not final: final = body
-    return {"answer": final, "citations": citations, "context_found": True}
+    # Gera a resposta final com o LLM, mas sem metadados de nome/depto, pois esta é uma busca genérica.
+    final = _llm_resposta_final(q, context_snippets, None, None, {"emails": [], "phones": []})
+
+    if not final:
+        final = " ".join(context_snippets)
+
+    return {"answer": final, "citations": citations, "context_found": True, "confidence": conf}
