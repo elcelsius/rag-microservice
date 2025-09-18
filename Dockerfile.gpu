@@ -3,16 +3,18 @@ WORKDIR /app
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
-# deps de sistema (ajuste se precisar)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential git curl poppler-utils tesseract-ocr \
  && rm -rf /var/lib/apt/lists/*
 
-# instalar requirements de CPU
-COPY requirements.txt /tmp/requirements.txt
-COPY requirements-cpu.txt /tmp/requirements-cpu.txt
+# Torch CUDA (ajuste cu121 -> sua versão de CUDA)
 RUN python3 -m pip install --no-cache-dir --upgrade pip && \
-    pip3 install --no-cache-dir -r /tmp/requirements-cpu.txt
+    pip3 install --index-url https://download.pytorch.org/whl/cu121 torch torchvision torchaudio
+
+# requirements GPU (herdam do base comum)
+COPY requirements.txt /tmp/requirements.txt
+COPY requirements-gpu.txt /tmp/requirements-gpu.txt
+RUN pip3 install --no-cache-dir -r /tmp/requirements-gpu.txt
 
 # código
 COPY . /app
@@ -20,12 +22,10 @@ COPY . /app
 # ===== estágio para ETL =====
 FROM base AS etl
 WORKDIR /app
-# (se precisar algo específico do ETL, instale aqui)
 CMD ["bash", "-lc", "python3 -u scripts/etl_build_index.py"]
 
 # ===== estágio para API =====
 FROM base AS ai_api
 WORKDIR /app
 EXPOSE 5000
-# (ajuste o entrypoint se sua API iniciar diferente)
 CMD ["python3", "-u", "api.py"]

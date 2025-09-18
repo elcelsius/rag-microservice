@@ -1,0 +1,3 @@
+-r requirements.txt
+faiss-cpu==1.8.0
+# NÃO colocar torch aqui: instalamos no Dockerfile.gpu com a roda CUDA

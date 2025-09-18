@@ -13,13 +13,17 @@ huggingface-hub==0.24.6
 transformers==4.48.3
 
 # Vetores / similaridade
-faiss-cpu==1.7.4
+#faiss-cpu==1.7.4
 rapidfuzz==3.9.7
 numpy==1.26.4
-torch==2.8.0
+#torch==2.8.0
 
 # PDF
 pypdf==4.2.0
+
+#DOCX
+python-docx==1.1.2
+
 
 # Gemini (SDK estável)
 google-generativeai>=0.7.2,<0.8

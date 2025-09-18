@@ -1,4 +1,6 @@
-# app/etl_orchestrator.py (COM LÓGICA INCREMENTAL)
+# etl_orchestrator.py
+# Este script orquestra o processo de ETL (Extract, Transform, Load) para construir e atualizar a base de conhecimento vetorial.
+# Ele suporta tanto a reconstrução completa do índice quanto atualizações incrementais.
 
 import os
 import torch
@@ -11,19 +13,28 @@ from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_community.vectorstores import FAISS
 from loaders import pdf_loader, docx_loader, txt_loader, md_loader, code_loader
 
+# Carrega variáveis de ambiente do arquivo .env
 load_dotenv()
 
-# --- CONFIGURAções ---
+# --- CONFIGURAÇÕES GLOBAIS ---
+# Determina o dispositivo a ser usado (GPU se disponível, caso contrário CPU)
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+# Caminho para a pasta de dados dentro do container Docker
 DATA_PATH = os.getenv("DATA_PATH_CONTAINER", "data/")
+# Caminho onde o índice FAISS será salvo/carregado
 VECTOR_STORE_PATH = "vector_store/faiss_index"
+
+# Configurações do banco de dados PostgreSQL, obtidas de variáveis de ambiente
 DB_HOST = os.getenv("POSTGRES_HOST", "postgres")
 DB_NAME = os.getenv("POSTGRES_DB")
 DB_USER = os.getenv("POSTGRES_USER")
 DB_PASSWORD = os.getenv("POSTGRES_PASSWORD")
 DB_PORT = os.getenv("POSTGRES_PORT", "5432")
+
+# Nome do modelo de embeddings a ser utilizado
 MODEL_NAME = "all-MiniLM-L6-v2"
 
+# Mapeamento de extensões de arquivo para seus respectivos loaders
 LOADER_MAPPING = {
     ".pdf": pdf_loader, ".docx": docx_loader, ".md": md_loader, ".txt": txt_loader,
     ".php": code_loader, ".sql": code_loader, ".json": code_loader, ".xml": code_loader,
@@ -35,11 +46,14 @@ LOADER_MAPPING = {
 # --- FUNÇÕES AUXILIARES ---
 
 def get_db_connection():
+    """Estabelece e retorna uma conexão com o banco de dados PostgreSQL."""
     return psycopg2.connect(dbname=DB_NAME, user=DB_USER, password=DB_PASSWORD, host=DB_HOST, port=DB_PORT)
 
 
 def get_file_hash(file_path):
-    """Calcula o hash SHA256 de um arquivo para detectar modificações."""
+    """Calcula o hash SHA256 de um arquivo para detectar modificações.
+    Isso é crucial para a funcionalidade de atualização incremental.
+    """
     hasher = hashlib.sha256()
     with open(file_path, 'rb') as f:
         buf = f.read()
@@ -48,12 +62,14 @@ def get_file_hash(file_path):
 
 
 def setup_database():
-    """Garante que as tabelas 'document_chunks' e 'processed_files' existam."""
+    """Garante que as tabelas 'document_chunks' e 'processed_files' existam no banco de dados.
+    Cria as tabelas se elas ainda não existirem.
+    """
     print("INFO: Conectando ao banco de dados para configurar as tabelas...")
     try:
         conn = get_db_connection()
         cur = conn.cursor()
-        # Tabela para os pedaços de texto
+        # Tabela para armazenar os pedaços de texto (chunks) e seus metadados
         cur.execute("""
             CREATE TABLE IF NOT EXISTS document_chunks (
                 id SERIAL PRIMARY KEY,
@@ -63,7 +79,7 @@ def setup_database():
                 created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
             );
         """)
-        # Tabela para rastrear arquivos processados e suas versões
+        # Tabela para rastrear arquivos processados e seus hashes, permitindo atualizações incrementais
         cur.execute("""
             CREATE TABLE IF NOT EXISTS processed_files (
                 id SERIAL PRIMARY KEY,
@@ -78,40 +94,44 @@ def setup_database():
         print("SUCCESS: Tabelas verificadas/criadas com sucesso.")
     except Exception as e:
         print(f"ERROR: Não foi possível configurar o banco de dados: {e}")
-        raise
+        raise # Re-lança a exceção para indicar falha crítica
 
 
 def process_and_embed_documents(docs_to_process, embeddings_model):
-    """Função reutilizável para carregar, dividir e gerar embeddings."""
+    """Carrega, divide documentos em chunks e gera embeddings para eles.
+    Retorna os chunks divididos e o vetorstore FAISS resultante.
+    """
     if not docs_to_process:
         return None, None
 
     print(f"INFO: {len(docs_to_process)} documentos serão processados.")
-    # Adicionamos separadores que são comuns entre registros (duas quebras de linha)
-    # Isso incentiva o splitter a criar chunks mais coesos para cada docente.
+    # Inicializa o text splitter para dividir documentos grandes em pedaços menores (chunks)
+    # Usa separadores para tentar manter a coesão dos chunks
     text_splitter = RecursiveCharacterTextSplitter(
-        chunk_size=1200,
-        chunk_overlap=200,
-        separators=["\n\n", "\n", " ", ""] # Adicionando separadores
+        chunk_size=1200,  # Tamanho máximo de cada chunk
+        chunk_overlap=200, # Sobreposição entre chunks para manter o contexto
+        separators=["\n\n", "\n", " ", ""] # Separadores para divisão de texto
     )
-    # --- FIM DA MODIFICAÇÃO -
     split_chunks = text_splitter.split_documents(docs_to_process)
     print(f"SUCCESS: Documentos divididos em {len(split_chunks)} chunks.")
 
     print("INFO: Gerando embeddings...")
+    # Gera embeddings para os chunks e cria um vetorstore FAISS
     vector_store = FAISS.from_documents(split_chunks, embeddings_model)
     print("SUCCESS: Embeddings gerados com sucesso.")
 
     return split_chunks, vector_store
 
 
-# --- LÓGICAS DE EXECUÇÃO ---
+# --- LÓGICAS DE EXECUÇÃO PRINCIPAIS ---
 
 def run_full_rebuild():
-    """Limpa toda a base de conhecimento e a reconstrói do zero."""
+    """Executa um rebuild completo da base de conhecimento.
+    Limpa todos os dados existentes (chunks e arquivos processados) e reconstrói o índice do zero.
+    """
     print("\n--- INICIANDO REBUILD COMPLETO ---")
 
-    # Limpa as tabelas no banco de dados
+    # Limpa as tabelas no banco de dados para garantir um estado limpo
     conn = get_db_connection()
     cur = conn.cursor()
     print("INFO: Limpando dados antigos (tabelas document_chunks e processed_files)...")
@@ -120,7 +140,7 @@ def run_full_rebuild():
     cur.close()
     conn.close()
 
-    # Carrega todos os documentos da pasta /data
+    # Carrega todos os documentos da pasta DATA_PATH usando os loaders apropriados
     all_docs = []
     file_hashes = {}
     for root, _, files in os.walk(DATA_PATH):
@@ -129,6 +149,7 @@ def run_full_rebuild():
             file_ext = os.path.splitext(filename)[1].lower()
             if file_ext in LOADER_MAPPING:
                 try:
+                    # Carrega o documento e armazena seu hash
                     all_docs.extend(LOADER_MAPPING[file_ext].load(file_path))
                     file_hashes[file_path] = get_file_hash(file_path)
                 except Exception as e:
@@ -138,23 +159,27 @@ def run_full_rebuild():
         print("WARNING: Nenhum documento encontrado para processar.")
         return
 
+    # Inicializa o modelo de embeddings com o dispositivo selecionado (CPU/GPU)
     embeddings_model = HuggingFaceEmbeddings(model_name=MODEL_NAME, model_kwargs={'device': DEVICE})
+    # Processa os documentos e gera o vetorstore
     split_chunks, vector_store = process_and_embed_documents(all_docs, embeddings_model)
 
     if vector_store:
+        # Salva o índice FAISS localmente
         vector_store.save_local(VECTOR_STORE_PATH)
-        print(f"SUCCESS: Novo índice FAISS salvo em '{VECTOR_STORE_PATH}'")
+        print(f"SUCCESS: Novo índice FAISS salvo em \'{VECTOR_STORE_PATH}\'")
 
+        # Salva os metadados dos chunks e dos arquivos processados no PostgreSQL
         conn = get_db_connection()
         cur = conn.cursor()
         print("INFO: Salvando chunks e hashes de arquivos no PostgreSQL...")
-        # Salva os chunks
+        # Salva cada chunk individualmente
         for i, doc in enumerate(split_chunks):
             cur.execute(
                 "INSERT INTO document_chunks (source_file, chunk_text, faiss_index) VALUES (%s, %s, %s)",
                 (doc.metadata.get('source', 'desconhecido'), doc.page_content, i)
             )
-        # Salva os hashes dos arquivos processados
+        # Salva o hash de cada arquivo processado
         for file_path, file_hash in file_hashes.items():
             cur.execute(
                 "INSERT INTO processed_files (source_file, file_hash) VALUES (%s, %s)",
@@ -167,9 +192,12 @@ def run_full_rebuild():
 
 
 def run_incremental_update():
-    """Verifica e processa apenas arquivos novos ou modificados."""
+    """Executa uma atualização incremental da base de conhecimento.
+    Processa apenas arquivos novos ou modificados, mesclando-os ao índice existente.
+    """
     print("\n--- INICIANDO ATUALIZAÇÃO INCREMENTAL ---")
 
+    # Recupera os arquivos já processados e seus hashes do banco de dados
     conn = get_db_connection()
     cur = conn.cursor()
     cur.execute("SELECT source_file, file_hash FROM processed_files")
@@ -180,13 +208,14 @@ def run_incremental_update():
     docs_to_add = []
     files_to_update_in_db = {}
 
-    # Identifica arquivos novos ou modificados
+    # Identifica arquivos novos ou modificados na pasta DATA_PATH
     for root, _, files in os.walk(DATA_PATH):
         for filename in files:
             file_path = os.path.join(root, filename)
             file_ext = os.path.splitext(filename)[1].lower()
             if file_ext in LOADER_MAPPING:
                 current_hash = get_file_hash(file_path)
+                # Se o arquivo não foi processado antes ou seu hash mudou
                 if file_path not in processed_files_db or processed_files_db[file_path] != current_hash:
                     print(f"INFO: Detectado arquivo novo/modificado: {file_path}")
                     try:
@@ -199,19 +228,18 @@ def run_incremental_update():
         print("SUCCESS: Nenhuma alteração detectada. A base de conhecimento já está atualizada.")
         return
 
-    # Se houver arquivos modificados, a abordagem mais segura é um rebuild.
-    # A remoção de vetores específicos do FAISS é complexa.
+    # Verifica se houve modificações em arquivos existentes. A remoção de vetores específicos do FAISS é complexa.
+    # Por simplicidade e segurança, se um arquivo existente foi modificado, recomenda-se um rebuild completo.
     modified_files_exist = any(path in processed_files_db for path in files_to_update_in_db)
     if modified_files_exist:
         print("WARNING: Modificações em arquivos existentes foram detectadas.")
         print("Para garantir a consistência, a remoção de dados antigos é complexa.")
         print("Recomendação: Execute um rebuild completo com ./treinar_ia.sh para refletir as alterações.")
-        # O ideal seria ter uma lógica de remoção, mas um rebuild é mais seguro.
-        # Por enquanto, vamos apenas avisar e parar. Ou poderíamos forçar um rebuild.
-        # Para simplificar, vamos avisar e parar a atualização.
         return
 
+    # Inicializa o modelo de embeddings com o dispositivo selecionado
     embeddings_model = HuggingFaceEmbeddings(model_name=MODEL_NAME, model_kwargs={'device': DEVICE})
+    # Processa os novos/modificados documentos e gera um novo vetorstore temporário
     split_chunks, new_vector_store = process_and_embed_documents(docs_to_add, embeddings_model)
 
     if new_vector_store:
@@ -228,8 +256,10 @@ def run_incremental_update():
             total_vectors = existing_vector_store.index.ntotal
             print(f"SUCCESS: Índice FAISS atualizado e salvo. Total de vetores: {total_vectors}")
 
+            # Atualiza o banco de dados com os novos chunks e hashes de arquivos
             conn = get_db_connection()
             cur = conn.cursor()
+            # Obtém o último índice FAISS para garantir que os novos índices sejam únicos
             cur.execute("SELECT max(faiss_index) FROM document_chunks")
             last_index = cur.fetchone()[0] or -1
 
@@ -240,6 +270,7 @@ def run_incremental_update():
                     (doc.metadata.get('source', 'desconhecido'), doc.page_content, last_index + 1 + i)
                 )
             for file_path, file_hash in files_to_update_in_db.items():
+                # Usa ON CONFLICT para atualizar o hash se o arquivo já existir, ou inserir se for novo
                 cur.execute(
                     "INSERT INTO processed_files (source_file, file_hash) VALUES (%s, %s) ON CONFLICT (source_file) DO UPDATE SET file_hash = EXCLUDED.file_hash, processed_at = CURRENT_TIMESTAMP",
                     (file_path, file_hash)
@@ -255,8 +286,10 @@ def run_incremental_update():
 
 
 if __name__ == "__main__":
+    # Configura o banco de dados ao iniciar o script
     setup_database()
 
+    # Determina o modo de execução (rebuild completo ou atualização incremental) com base nos argumentos da linha de comando
     execution_mode = "rebuild"
     if len(sys.argv) > 1 and sys.argv[1] == "update":
         execution_mode = "update"
@@ -267,3 +300,5 @@ if __name__ == "__main__":
         run_full_rebuild()
 
     print("\n--- PROCESSO DE ETL CONCLUÍDO ---")
+
+

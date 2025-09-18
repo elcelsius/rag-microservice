@@ -14,8 +14,11 @@ else
     echo "🧠 Iniciando o processo de ETL em modo de REBUILD COMPLETO (CPU)..."
 fi
 
-cd "$(dirname "$0")"
-docker-compose -f docker-compose.yml -f docker-compose.cpu.yml run --rm etl python3 etl_orchestrator.py "$MODE"
+#!/usr/bin/env bash
+set -euo pipefail
+cd "$(dirname "$0")/.."
+docker-compose -f docker-compose.cpu.yml run --rm ai_etl bash -lc 'python3 -u scripts/etl_build_index.py'
+
 
 echo ""
 if [[ "$MODE" == "update" ]]; then

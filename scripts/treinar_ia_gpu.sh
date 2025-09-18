@@ -56,9 +56,11 @@ else
     echo "A base de conhecimento será limpa e reconstruída do zero."
 fi
 
-# Executa o comando do Docker Compose
-cd "$(dirname "$0")"
-docker-compose run --rm etl python3 etl_orchestrator.py "$MODE"
+#!/usr/bin/env bash
+set -euo pipefail
+cd "$(dirname "$0")/.."
+docker-compose -f docker-compose.gpu.yml run --rm ai_etl bash -lc 'python3 -u scripts/etl_build_index.py'
+
 
 # Mensagem final
 echo ""

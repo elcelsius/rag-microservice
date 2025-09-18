@@ -21,8 +21,8 @@ services:
   ai_etl:
     build:
       context: .
-      dockerfile: Dockerfile.cpu
-      # target: etl   # <-- só descomente se seu Dockerfile tiver "FROM ... AS etl"
+      dockerfile: Dockerfile.gpu
+      # target: etl   # <-- deixe comentado se não houver estágio "AS etl"
     container_name: ai_etl
     environment:
       DATABASE_URL: "postgresql://postgres:postgres@ai_postgres:5432/ragdb"
@@ -38,12 +38,19 @@ services:
     working_dir: /app
     command: ["bash", "-lc", "python3 -u scripts/etl_build_index.py && echo 'ETL done'"]
     restart: "no"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
 
   ai_projeto_api:
     build:
       context: .
-      dockerfile: Dockerfile.cpu
-      # target: ai_api  # <-- só descomente se seu Dockerfile tiver "FROM ... AS ai_api"
+      dockerfile: Dockerfile.gpu
+      # target: ai_api  # <-- deixe comentado se não houver estágio "AS ai_api"
     container_name: ai_projeto_api
     environment:
       FAISS_STORE_DIR: "/app/vector_store/faiss_index"
@@ -65,6 +72,13 @@ services:
       interval: 10s
       timeout: 5s
       retries: 20
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
 
   ai_web_ui:
     image: nginx:1.27-alpine

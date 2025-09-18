@@ -1,33 +1,5 @@
-# Core de IA e Embeddings
-langchain
-langchain-core
-langchain-community
-langchain-huggingface
-langchain-google-genai
-sentence-transformers
-faiss-cpu
-torch
-langgraph
-rapidfuzz         # fuzzy matching leve pra nomes
-
-# Pinamos a versão do NumPy para garantir compatibilidade com faiss-gpu
-numpy==1.26.4
-
-# Biblioteca da API do Google Gemini
-google-generativeai
-
-# Micro-framework para criar a API
-Flask
-Flask-Cors
-
-# Loaders de Documentos
-pypdf
-python-docx
-unstructured[md]
-unstructured[pdf]
-pikepdf  
-
-# Banco de Dados e Configuração
-psycopg2-binary
-python-dotenv
-sqlalchemy
+-r requirements.txt
+faiss-cpu==1.8.0
+torch==2.4.0
+torchvision==0.19.0
+torchaudio==2.4.0

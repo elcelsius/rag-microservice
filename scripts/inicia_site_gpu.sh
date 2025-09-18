@@ -2,7 +2,8 @@
 # Inicia todo o ambiente em MODO GPU e abre o site no navegador.
 
 echo "🚀 Iniciando todos os serviços (Postgres, API, Web UI)..."
-docker-compose up --build -d
+cd "$(dirname "$0")/.."
+docker compose -f docker-compose.gpu.yml up --build -d
 
 echo ""
 echo "⏳ Aguardando o servidor web ficar pronto na porta 8080..."
