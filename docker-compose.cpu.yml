@@ -51,6 +51,11 @@ services:
       GOOGLE_API_KEY: "${GOOGLE_API_KEY:-}"
       GOOGLE_MODEL:   "${GOOGLE_MODEL:-gemini-2.5-flash-lite}"
       REQUIRE_LLM_READY: "${REQUIRE_LLM_READY:-false}"
+      RERANKER_ENABLED: "${RERANKER_ENABLED:-true}"
+      RERANKER_NAME: "${RERANKER_NAME:-jinaai/jina-reranker-v2-base-multilingual}"
+      RERANKER_CANDIDATES: "${RERANKER_CANDIDATES:-30}"
+      RERANKER_TOP_K: "${RERANKER_TOP_K:-5}"
+      RERANKER_MAX_LEN: "${RERANKER_MAX_LEN:-4096}"
     depends_on:
       ai_etl:
         condition: service_completed_successfully

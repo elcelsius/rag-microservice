@@ -30,6 +30,11 @@ services:
       DATA_DIR: "/app/data"
       FAISS_OUT_DIR: "/app/vector_store/faiss_index"
       EMBEDDINGS_MODEL: "${EMBEDDINGS_MODEL:-intfloat/multilingual-e5-large}"
+      RERANKER_ENABLED: "${RERANKER_ENABLED:-true}"
+      RERANKER_NAME: "${RERANKER_NAME:-jinaai/jina-reranker-v2-base-multilingual}"
+      RERANKER_CANDIDATES: "${RERANKER_CANDIDATES:-30}"
+      RERANKER_TOP_K: "${RERANKER_TOP_K:-5}"
+      RERANKER_MAX_LEN: "${RERANKER_MAX_LEN:-4096}"
     depends_on:
       ai_postgres:
         condition: service_healthy

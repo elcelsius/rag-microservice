@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 import re, unicodedata
+import os
 from typing import Any, Dict, List, Tuple, Optional
 
 from rapidfuzz import fuzz, distance
@@ -11,19 +12,63 @@ from langchain_community.vectorstores import FAISS
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain.schema import Document
 from llm_client import load_prompt, call_llm
+from sentence_transformers import CrossEncoder
+
+# ==== Configurações do Reranker ====
+RERANKER_ENABLED = os.getenv("RERANKER_ENABLED", "true").lower() == "true"
+RERANKER_NAME = os.getenv("RERANKER_NAME", "jinaai/jina-reranker-v2-base-multilingual")
+RERANKER_CANDIDATES = int(os.getenv("RERANKER_CANDIDATES", "30"))
+RERANKER_TOP_K = int(os.getenv("RERANKER_TOP_K", "5"))
+RERANKER_MAX_LEN = int(os.getenv("RERANKER_MAX_LEN", "4096"))
+
+_reranker_model = None
+
+
+def _get_reranker():
+    """Carrega o modelo CrossEncoder do reranker sob demanda e o mantém em memória."""
+    global _reranker_model
+    if _reranker_model is None and RERANKER_ENABLED:
+        # carrega uma vez, fica em memória
+        _reranker_model = CrossEncoder(RERANKER_NAME, max_length=RERANKER_MAX_LEN)
+    return _reranker_model
+
+
+def _apply_rerank(query: str, docs: List[Document]) -> List[Document]:
+    """
+    Reclassifica uma lista de documentos com base na sua relevância para a consulta.
+
+    Args:
+        query (str): A consulta do usuário.
+        docs (List[Document]): Lista de documentos do LangChain a serem reranqueados.
+
+    Returns:
+        List[Document]: A lista de documentos reordenada e truncada para o top_k.
+    """
+    if not (RERANKER_ENABLED and docs):
+        return docs[:min(len(docs), RERANKER_TOP_K)]
+    rr = _get_reranker()
+    if rr is None:
+        return docs[:min(len(docs), RERANKER_TOP_K)]
+
+    pairs = [(query, getattr(d, "page_content", str(d))) for d in docs]
+    scores = rr.predict(pairs)  # maior = melhor
+
+    ranked = sorted(zip(docs, scores), key=lambda x: float(x[1]), reverse=True)
+    return [d for d, _ in ranked[:RERANKER_TOP_K]]
+
 
 # ==== Utilitários de Processamento de Texto ====
-_SENT_SPLIT = re.compile(r"(?<=[\.\!\?\;\:])\s+|\n+") # Regex para dividir texto em sentenças
-_WS = re.compile(r"\s+") # Regex para normalizar espaços em branco
-EMAIL_RE = re.compile(r"[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}", re.IGNORECASE) # Regex para encontrar e-mails
-PHONE_RE = re.compile(r"\(?\d{2}\)?\s?\d{4,5}-\d{4}") # Regex para encontrar números de telefone
-WORD_RE = re.compile(r"[A-Za-zÀ-ÖØ-öø-ÿ]+") # Regex para encontrar palavras (letras acentuadas incluídas)
+_SENT_SPLIT = re.compile(r"(?<=[\.\!\?\;\:])\s+|\n+")  # Regex para dividir texto em sentenças
+_WS = re.compile(r"\s+")  # Regex para normalizar espaços em branco
+EMAIL_RE = re.compile(r"[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}", re.IGNORECASE)  # Regex para encontrar e-mails
+PHONE_RE = re.compile(r"\(?\d{2}\)?\s?\d{4,5}-\d{4}")  # Regex para encontrar números de telefone
+WORD_RE = re.compile(r"[A-Za-zÀ-ÖØ-öø-ÿ]+")  # Regex para encontrar palavras (letras acentuadas incluídas)
 
 # Palavras de parada (stopwords) comuns em português, usadas para filtrar termos de busca.
 STOP = {
-    "que","qual","quais","sobre","para","como","onde","quem",
-    "contato","email","e-mail","fone","telefone","ramal",
-    "da","de","do","um","uma","o","a","os","as"
+    "que", "qual", "quais", "sobre", "para", "como", "onde", "quem",
+    "contato", "email", "e-mail", "fone", "telefone", "ramal",
+    "da", "de", "do", "um", "uma", "o", "a", "os", "as"
 }
 
 # Rótulos de departamentos/unidades e suas chaves normalizadas para busca.
@@ -44,18 +89,22 @@ ALIASES = {
     "andréa": ["andreia", "andrea", "andréia"],
 }
 
+
 def _norm_ws(s: str) -> str:
     """Normaliza espaços em branco em uma string, substituindo múltiplos espaços por um único e removendo espaços nas extremidades."""
     return _WS.sub(" ", (s or "").strip())
+
 
 def _strip_accents_lower(s: str) -> str:
     """Remove acentos e converte uma string para minúsculas para facilitar comparações."""
     nfkd = unicodedata.normalize("NFD", s or "")
     return "".join(ch for ch in nfkd if not unicodedata.combining(ch)).lower()
 
+
 def _tokenize_letters(text: str) -> List[str]:
     """Tokeniza um texto, extraindo apenas sequências de letras como palavras."""
     return WORD_RE.findall(text or "")
+
 
 def _guess_dept_from_source(src: str) -> Optional[str]:
     """Tenta adivinhar o departamento a partir do texto da fonte do documento."""
@@ -64,6 +113,7 @@ def _guess_dept_from_source(src: str) -> Optional[str]:
         if key in s:
             return label
     return None
+
 
 def _dept_hints_in_question(q: str) -> List[str]:
     """Identifica possíveis departamentos mencionados na pergunta do usuário."""
@@ -74,6 +124,7 @@ def _dept_hints_in_question(q: str) -> List[str]:
             hints.append(label)
     return hints
 
+
 # ==== Funções de Extração de Termos ====
 def _candidate_terms(question: str) -> List[str]:
     """Extrai termos candidatos da pergunta, incluindo e-mails e palavras com 3+ caracteres, excluindo stopwords."""
@@ -81,7 +132,7 @@ def _candidate_terms(question: str) -> List[str]:
     if not q:
         return []
     emails = EMAIL_RE.findall(q)
-    words = re.findall(r"[A-Za-zÀ-ÖØ-öø-ÿ0-9]{3,}", q) # Encontra palavras com 3 ou mais caracteres
+    words = re.findall(r"[A-Za-zÀ-ÖØ-öø-ÿ0-9]{3,}", q)  # Encontra palavras com 3 ou mais caracteres
     terms, seen = [], set()
     for w in emails + words:
         k = _strip_accents_lower(w)
@@ -89,6 +140,7 @@ def _candidate_terms(question: str) -> List[str]:
             terms.append(w)
             seen.add(k)
     return terms
+
 
 def _term_variants(term: str) -> List[str]:
     """Gera variantes de um termo (ex: com/sem acento, aliases) para busca flexível."""
@@ -104,12 +156,15 @@ def _term_variants(term: str) -> List[str]:
     if t.endswith("ea"):
         vs.add(t[:-2] + "eia")
     # Normalizações simples de caracteres
-    vs.add(t.replace("ç","c").replace("á","a").replace("é","e").replace("í","i").replace("ó","o").replace("ú","u"))
+    vs.add(
+        t.replace("ç", "c").replace("á", "a").replace("é", "e").replace("í", "i").replace("ó", "o").replace("ú", "u"))
     return list(vs)
+
 
 def _is_name_like(token: str) -> bool:
     """Verifica se um token parece ser um nome (apenas letras, 5+ caracteres)."""
     return token.isalpha() and len(token) >= 5
+
 
 def _name_token_match(token_norm: str, term_norm: str) -> bool:
     """Compara um token com um termo de busca usando a distância de Levenshtein normalizada."""
@@ -117,6 +172,7 @@ def _name_token_match(token_norm: str, term_norm: str) -> bool:
         return False
     sim = distance.Levenshtein.normalized_similarity(token_norm, term_norm)
     return sim >= 0.86
+
 
 def _sentence_hits_by_name(text: str, terms: List[str]) -> List[Tuple[str, int]]:
     """Encontra sentenças em um texto que correspondem a uma lista de termos de busca (nomes)."""
@@ -137,7 +193,8 @@ def _sentence_hits_by_name(text: str, terms: List[str]) -> List[Tuple[str, int]]
             for tk in tokens_norm:
                 if _is_name_like(tk) and _name_token_match(tk, tn):
                     sc = int(100 * distance.Levenshtein.normalized_similarity(tk, tn))
-                    best = max(best, sc); hit = True
+                    best = max(best, sc);
+                    hit = True
         if not hit:
             for tn in all_norms:
                 sc = fuzz.partial_ratio(tn, s_norm)
@@ -150,10 +207,13 @@ def _sentence_hits_by_name(text: str, terms: List[str]) -> List[Tuple[str, int]]
     for s, sc in out:
         k = s.lower()
         if k not in seen:
-            uniq.append((s, sc)); seen.add(k)
+            uniq.append((s, sc));
+            seen.add(k)
     return uniq[:3]
 
-NAME_SEQ_RE = re.compile(r"([A-ZÁ-Ü][a-zá-ü]+(?:\s+[A-ZÁ-Ü][a-zá-ü]+){1,5})") # Regex para sequências de nomes
+
+NAME_SEQ_RE = re.compile(r"([A-ZÁ-Ü][a-zá-ü]+(?:\s+[A-ZÁ-Ü][a-zá-ü]+){1,5})")  # Regex para sequências de nomes
+
 
 def _normalize_phone(p: str) -> str:
     """Normaliza um número de telefone para um formato padrão."""
@@ -164,6 +224,7 @@ def _normalize_phone(p: str) -> str:
         return f"({digits[0:2]}) {digits[2:6]}-{digits[6:10]}"
     return p
 
+
 def _extract_contacts(texts: List[str]) -> Dict[str, List[str]]:
     """Extrai e-mails e telefones de uma lista de textos."""
     emails, phones = set(), set()
@@ -173,6 +234,7 @@ def _extract_contacts(texts: List[str]) -> Dict[str, List[str]]:
         for p in PHONE_RE.findall(t or ""):
             phones.add(_normalize_phone(p))
     return {"emails": sorted(emails), "phones": sorted(phones)}
+
 
 def _extract_name(snippets: List[str], term: str) -> Optional[str]:
     """Extrai um nome completo de uma lista de snippets de texto, com base em um termo de busca."""
@@ -185,7 +247,8 @@ def _extract_name(snippets: List[str], term: str) -> Optional[str]:
             for tk in _tokenize_letters(cand):
                 sim = distance.Levenshtein.normalized_similarity(_strip_accents_lower(tk), tnorm)
                 if sim > best_sim:
-                    best_sim = sim; best = cand
+                    best_sim = sim;
+                    best = cand
         if best and best_sim >= 0.82:
             return best
     for s in snippets:
@@ -194,12 +257,14 @@ def _extract_name(snippets: List[str], term: str) -> Optional[str]:
             return cands[0]
     return None
 
+
 def _as_citation(doc: Document) -> Dict[str, Any]:
     """Formata um documento LangChain como uma citação para a resposta final."""
     src = doc.metadata.get("source") or "desconhecido"
     chunk = doc.metadata.get("chunk")
     preview = _norm_ws(doc.page_content)[:180]
     return {"source": src, "chunk": int(chunk) if str(chunk).isdigit() else None, "preview": preview}
+
 
 def _top_sentences(question: str, texts: List[str], top_n: int = 3) -> List[Tuple[str, float]]:
     """Seleciona as sentenças mais relevantes de uma lista de textos, com base na similaridade com a pergunta."""
@@ -212,17 +277,21 @@ def _top_sentences(question: str, texts: List[str], top_n: int = 3) -> List[Tupl
     for s in sentences:
         k = s.lower()
         if k not in seen:
-            uniq.append(s); seen.add(k)
+            uniq.append(s);
+            seen.add(k)
     q = _norm_ws(question)
     scored = [(s, fuzz.token_set_ratio(q, s) / 100.0) for s in uniq]
     scored.sort(key=lambda x: x[1], reverse=True)
     return scored[:top_n]
 
-def _context_window_around_name(doc_text: str, person_name: str, chars_before: int = 220, chars_after: int = 300) -> Optional[str]:
+
+def _context_window_around_name(doc_text: str, person_name: str, chars_before: int = 220, chars_after: int = 300) -> \
+Optional[str]:
     """Extrai uma janela de contexto de texto ao redor de um nome de pessoa."""
     if not (doc_text and person_name):
         return None
-    txt = doc_text; name = person_name.strip()
+    txt = doc_text;
+    name = person_name.strip()
     idx = txt.find(name)
     if idx < 0:
         compact_name = _norm_ws(name)
@@ -232,19 +301,21 @@ def _context_window_around_name(doc_text: str, person_name: str, chars_before: i
     end = min(len(txt), idx + len(name) + chars_after)
     return _norm_ws(txt[start:end])
 
+
 # ==== Funções de Interação com LLM ====
 # Carrega os prompts para triagem, pedido de informação e resposta final.
-_TRIAGE_PROMPT   = load_prompt("prompts/triagem_prompt.txt")
+_TRIAGE_PROMPT = load_prompt("prompts/triagem_prompt.txt")
 _PEDIR_INFO_PROMPT = load_prompt("prompts/pedir_info_prompt.txt")
 _RESPOSTA_PROMPT = load_prompt("prompts/resposta_final_prompt.txt")
 
+
 def _llm_triage(question: str, signals: Dict[str, Any]) -> Dict[str, Any]:
     """Usa o LLM para fazer a triagem da pergunta, decidindo se deve responder ou pedir mais informações.
-    
+
     Args:
         question (str): A pergunta original do usuário.
         signals (Dict[str, Any]): Sinais extraídos da pergunta para auxiliar na triagem.
-        
+
     Returns:
         Dict[str, Any]: Um dicionário contendo a ação decidida ("AUTO_RESOLVER" ou "PEDIR_INFO") e uma possível pergunta de esclarecimento.
     """
@@ -256,14 +327,15 @@ def _llm_triage(question: str, signals: Dict[str, Any]) -> Dict[str, Any]:
         return {"action": data.get("action"), "ask": data.get("ask", "")}
     return {"action": "AUTO_RESOLVER", "ask": ""}
 
+
 def _llm_pedir_info(question: str, options: List[str], prefer_attr: str = "departamento") -> str:
     """Usa o LLM para gerar uma pergunta de esclarecimento ao usuário.
-    
+
     Args:
         question (str): A pergunta original do usuário.
         options (List[str]): Opções de termos encontrados que podem precisar de esclarecimento.
         prefer_attr (str): Atributo preferencial para o qual o esclarecimento é solicitado (ex: "departamento").
-        
+
     Returns:
         str: A pergunta de esclarecimento gerada pelo LLM.
     """
@@ -276,15 +348,17 @@ def _llm_pedir_info(question: str, options: List[str], prefer_attr: str = "depar
     text, _ = call_llm(_PEDIR_INFO_PROMPT, payload, expect_json=False, max_tokens=120)
     return (text or "").strip() or "Pode informar o departamento/unidade?"
 
-def _format_direct(name: Optional[str], dept: Optional[str], contacts: Dict[str, List[str]], context_snippets: List[str]) -> str:
+
+def _format_direct(name: Optional[str], dept: Optional[str], contacts: Dict[str, List[str]],
+                   context_snippets: List[str]) -> str:
     """Formata uma resposta direta com as informações encontradas, sem usar o LLM.
-    
+
     Args:
         name (Optional[str]): Nome da pessoa encontrada.
         dept (Optional[str]): Departamento encontrado.
         contacts (Dict[str, List[str]]): Contatos (e-mails, telefones) encontrados.
         context_snippets (List[str]): Trechos de contexto relevantes.
-        
+
     Returns:
         str: A resposta formatada.
     """
@@ -296,40 +370,45 @@ def _format_direct(name: Optional[str], dept: Optional[str], contacts: Dict[str,
     if parts: return " — ".join(parts)
     return (context_snippets[0] if context_snippets else "Não encontrei.")[:400]
 
-def _llm_resposta_final(question: str, context_snippets: List[str], name: Optional[str], dept: Optional[str], contacts: Dict[str, List[str]]) -> str:
+
+def _llm_resposta_final(question: str, context_snippets: List[str], name: Optional[str], dept: Optional[str],
+                        contacts: Dict[str, List[str]]) -> str:
     """Usa o LLM para gerar uma resposta final em linguagem natural, com base no contexto e metadados extraídos.
-    
+
     Args:
         question (str): A pergunta original do usuário.
         context_snippets (List[str]): Trechos de contexto relevantes.
         name (Optional[str]): Nome da pessoa encontrada.
         dept (Optional[str]): Departamento encontrado.
         contacts (Dict[str, List[str]]): Contatos (e-mails, telefones) encontrados.
-        
+
     Returns:
         str: A resposta final gerada pelo LLM.
     """
     if not _RESPOSTA_PROMPT:
         return _format_direct(name, dept, contacts, context_snippets)
     ctx = "\n\n".join(f"- {s}" for s in context_snippets[:6])
-    meta = {"nome": name or "", "departamento": dept or "", "telefones": contacts.get("phones", []), "emails": contacts.get("emails", [])}
+    meta = {"nome": name or "", "departamento": dept or "", "telefones": contacts.get("phones", []),
+            "emails": contacts.get("emails", [])}
     user = f"Pergunta: {question}\n\nContexto (trechos):\n{ctx}\n\nMetadados extraídos:\n{meta}\n\nFormato: Nome — Departamento — 📞 — ✉️ (curto)."
     text, _ = call_llm(_RESPOSTA_PROMPT, user, expect_json=False, max_tokens=220)
     if not (text or "").strip():
         return _format_direct(name, dept, contacts, context_snippets)
     return text.strip()
 
+
 # ==== Pipeline Principal de Resposta ====
-def answer_question(question: str, embeddings_model: HuggingFaceEmbeddings, vectorstore: FAISS, *, k: int = 5, fetch_k: int = 20) -> Dict[str, Any]:
+def answer_question(question: str, embeddings_model: HuggingFaceEmbeddings, vectorstore: FAISS, *, k: int = 5,
+                    fetch_k: int = 20) -> Dict[str, Any]:
     """Pipeline principal para responder a uma pergunta usando uma abordagem híbrida (busca lexical e vetorial).
-    
+
     Args:
         question (str): A pergunta do usuário.
         embeddings_model (HuggingFaceEmbeddings): O modelo de embeddings para gerar vetores.
         vectorstore (FAISS): O vetorstore FAISS para busca de documentos.
-        k (int): Número de documentos a serem retornados pela busca vetorial.
+        k (int): Número de documentos a serem retornados pela busca vetorial (usado como fallback se o reranker estiver desabilitado).
         fetch_k (int): Número de documentos a serem buscados inicialmente para MMR.
-        
+
     Returns:
         Dict[str, Any]: Um dicionário contendo a resposta, citações e se o contexto foi encontrado.
     """
@@ -344,7 +423,7 @@ def answer_question(question: str, embeddings_model: HuggingFaceEmbeddings, vect
     dept_hints = _dept_hints_in_question(q)
 
     terms = _candidate_terms(q)
-    lex_hits: List[Tuple[Document, List[Tuple[str,int]], int]] = []
+    lex_hits: List[Tuple[Document, List[Tuple[str, int]], int]] = []
     if terms and all_docs:
         for d in all_docs:
             src = (d.metadata.get("source") or "").lower()
@@ -375,8 +454,9 @@ def answer_question(question: str, embeddings_model: HuggingFaceEmbeddings, vect
         if name and (not contacts["phones"]):
             ref_doc = None
             for d, hits, _b in lex_hits:
-                if any(name in s for s,_ in hits):
-                    ref_doc = d; break
+                if any(name in s for s, _ in hits):
+                    ref_doc = d;
+                    break
             ref_doc = ref_doc or lex_hits[0][0]
             win = _context_window_around_name(ref_doc.page_content or "", name, 220, 300)
             if win:
@@ -408,23 +488,35 @@ def answer_question(question: str, embeddings_model: HuggingFaceEmbeddings, vect
         return {"answer": final, "citations": citations[:3], "context_found": True}
 
     # Fallback para busca por embeddings se a busca lexical falhar
+
+    # Busca um número maior de candidatos para o reranker
+    num_candidates = RERANKER_CANDIDATES if RERANKER_ENABLED else k
+
     try:
-        docs: List[Document] = vectorstore.max_marginal_relevance_search(q, k=k, fetch_k=fetch_k)
+        # Garante que fetch_k seja grande o suficiente para MMR
+        mmr_fetch_k = max(fetch_k, num_candidates)
+        docs: List[Document] = vectorstore.max_marginal_relevance_search(q, k=num_candidates, fetch_k=mmr_fetch_k)
     except Exception:
-        docs = vectorstore.similarity_search(q, k=k)
+        docs = vectorstore.similarity_search(q, k=num_candidates)
+
+    # Aplica o rerank para reordenar e selecionar os melhores documentos
+    docs = _apply_rerank(q, docs)
+    print(
+        f"[RERANK] enabled={RERANKER_ENABLED} name={RERANKER_NAME} k_candidates={num_candidates} top_k={RERANKER_TOP_K} final={len(docs)}")
+
     if not docs:
-        return {"answer": "Não encontrei nada relacionado nos documentos indexados.", "citations": [], "context_found": False}
+        return {"answer": "Não encontrei nada relacionado nos documentos indexados.", "citations": [],
+                "context_found": False}
 
     top_texts = [d.page_content for d in docs]
     sent_scores = _top_sentences(q, top_texts, top_n=3)
     if sent_scores and sent_scores[0][1] >= 0.45:
-        body = " ".join([s for s,_ in sent_scores][:3])
+        body = " ".join([s for s, _ in sent_scores][:3])
     else:
         body = _norm_ws(docs[0].page_content)
         if len(body) > 500: body = body[:500].rstrip() + "..."
     citations = [_as_citation(d) for d in docs[:3]]
-    final = _llm_resposta_final(q, [s for s,_ in sent_scores] if sent_scores else [body], None, None, {"emails": [], "phones": []})
+    final = _llm_resposta_final(q, [s for s, _ in sent_scores] if sent_scores else [body], None, None,
+                                {"emails": [], "phones": []})
     if not final: final = body
     return {"answer": final, "citations": citations, "context_found": True}
-
-
