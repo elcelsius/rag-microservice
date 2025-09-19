@@ -64,6 +64,10 @@ services:
       # ... outras configurações para Reranker, Multi-Query, etc.
       RERANKER_ENABLED: "${RERANKER_ENABLED:-true}"
       RERANKER_NAME: "${RERANKER_NAME:-jinaai/jina-reranker-v2-base-multilingual}"
+      STRUCTURED_ANSWER: "${STRUCTURED_ANSWER:-true}"
+      MAX_SOURCES: "${MAX_SOURCES:-5}"
+      DEBUG_LOG: "${DEBUG_LOG:-true}"         # logar no stdout
+      DEBUG_PAYLOAD: "${DEBUG_PAYLOAD:-true}" # incluir "debug" na resposta quando ?debug=true
     depends_on:
       # A API só inicia após o ETL ter sido concluído com sucesso.
       ai_etl:

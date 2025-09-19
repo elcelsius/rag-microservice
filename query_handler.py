@@ -2,10 +2,13 @@
 # Este módulo é responsável por processar as consultas dos usuários, realizar a busca no vetorstore FAISS,
 # extrair informações relevantes e formatar a resposta final usando um LLM.
 
+# -*- coding: utf-8 -*-
 from __future__ import annotations
+
 import re, unicodedata
 import os
 import math
+import time  # Importado para telemetria
 from typing import Any, Dict, List, Tuple, Optional, Iterable, Set
 
 from rapidfuzz import fuzz, distance
@@ -36,6 +39,96 @@ MQ_VARIANTS = int(os.getenv("MQ_VARIANTS", "3"))
 CONFIDENCE_MIN = float(os.getenv("CONFIDENCE_MIN", "0.32"))
 # Exige que um contexto seja encontrado nos documentos para gerar uma resposta.
 REQUIRE_CONTEXT = os.getenv("REQUIRE_CONTEXT", "true").lower() == "true"
+
+# === Structured answer / citations ===
+STRUCTURED_ANSWER = os.getenv("STRUCTURED_ANSWER", "true").lower() == "true"
+MAX_SOURCES = int(os.getenv("MAX_SOURCES", "5"))
+
+
+def _dedupe_preserve_order(items, key=lambda x: x):
+    seen = set()
+    out = []
+    for it in items:
+        k = key(it)
+        if k in seen:
+            continue
+        seen.add(k)
+        out.append(it)
+    return out
+
+
+def _collect_citations_from_docs(docs, max_sources=MAX_SOURCES):
+    """
+    Gera citações compactas a partir dos docs (page_content + metadata).
+    Deduplica por (source, chunk). Limita em max_sources.
+    """
+    cites = []
+    for d in docs or []:
+        meta = getattr(d, "metadata", {}) or {}
+        source = meta.get("source") or meta.get("file") or "desconhecido"
+        chunk = meta.get("chunk") or 1
+        preview = (getattr(d, "page_content", "") or "").strip().replace("\n", " ")
+        if len(preview) > 200:
+            preview = preview[:200].rstrip() + "..."
+        cites.append({"source": source, "chunk": chunk, "preview": preview})
+
+    cites = _dedupe_preserve_order(cites, key=lambda c: (c["source"], c["chunk"]))
+    return cites[:max_sources]
+
+
+def _format_answer_markdown(question: str, answer_text: str, citations: list, confidence: float | None):
+    """
+    Monta um Markdown simples com seções: Resumo / Fontes.
+    """
+    conf_str = f"\n_(confiança: {confidence:.2f})_" if (confidence is not None) else ""
+    fontes = []
+    for i, c in enumerate(citations, 1):
+        fontes.append(f"{i}. **{c['source']}** (chunk {c['chunk']}): {c['preview']}")
+    fontes_md = "\n".join(fontes) if fontes else "_Nenhuma fonte encontrada_"
+    md = (
+        f"### Resumo{conf_str}\n"
+        f"{(answer_text or '').strip()}\n\n"
+        f"### Fontes\n"
+        f"{fontes_md}\n"
+    )
+    return md
+
+
+# INÍCIO DO CÓDIGO INSERIDO (DEBUG HELPERS)
+# === Debug & Telemetry ===
+DEBUG_LOG = os.getenv("DEBUG_LOG", "true").lower() == "true"
+DEBUG_PAYLOAD = os.getenv("DEBUG_PAYLOAD", "true").lower() == "true"
+
+
+def _now():
+    return time.perf_counter()
+
+
+def _elapsed_ms(t0):
+    return round((time.perf_counter() - t0) * 1000.0, 1)
+
+
+def _pack_doc(doc, score=None, limit_preview=160):
+    meta = getattr(doc, "metadata", {}) or {}
+    txt = (getattr(doc, "page_content", "") or "").replace("\n", " ").strip()
+    if len(txt) > limit_preview:
+        txt = txt[:limit_preview].rstrip() + "..."
+    return {
+        "source": meta.get("source") or meta.get("file") or "desconhecido",
+        "chunk": int(meta.get("chunk") or 1),
+        "department": meta.get("department") or "",
+        "score": None if score is None else float(score),
+        "preview": txt,
+    }
+
+
+def _log_debug(msg: str):
+    if DEBUG_LOG:
+        print(f"[DEBUG] {msg}", flush=True)
+
+
+# FIM DO CÓDIGO INSERIDO (DEBUG HELPERS)
+
 
 # === Dicionário externo (departamentos, aliases, sinônimos, boosts) ===
 import yaml  # requer PyYAML
@@ -73,16 +166,23 @@ print(f"[DICT] departamentos={len(DEPARTMENTS)} aliases={len(ALIASES)} synonyms=
 # Variável global para armazenar o modelo do reranker e evitar recarregá-lo.
 _reranker_model = None
 
-
 def _get_reranker():
     """Carrega o modelo CrossEncoder do reranker sob demanda e o mantém em memória."""
     global _reranker_model
     if _reranker_model is None and RERANKER_ENABLED:
-        # carrega uma vez, fica em memória
-        print(f"[INFO] Carregando o modelo reranker: {RERANKER_NAME}")
-        _reranker_model = CrossEncoder(RERANKER_NAME, max_length=RERANKER_MAX_LEN)
+        try:
+            print(f"[INFO] Carregando o modelo reranker: {RERANKER_NAME}")
+            _reranker_model = CrossEncoder(
+                RERANKER_NAME,
+                max_length=RERANKER_MAX_LEN,
+                automodel_args={"trust_remote_code": True},
+                tokenizer_args={"trust_remote_code": True},
+            )
+        except Exception as e:
+            # Não derruba a resposta: desliga o reranker nesta execução
+            print(f"[WARN] Falha ao carregar reranker '{RERANKER_NAME}': {e}. Prosseguindo sem rerank.")
+            _reranker_model = None
     return _reranker_model
-
 
 def _apply_rerank(query: str, docs: List[Document]) -> Tuple[List[Document], List[float]]:
     """
@@ -167,16 +267,10 @@ def _apply_rerank(query: str, docs: List[Document]) -> Tuple[List[Document], Lis
 
 # ==== Utilitários de Geração de Multi-Query e Processamento de Texto ====
 
-def _dedupe_preserve_order(items: Iterable, key=lambda x: x) -> list:
+def _dedupe_preserve_order_existing(items: Iterable, key=lambda x: x) -> list:
     """
     Remove duplicatas de uma lista/iterável, preservando a ordem original dos elementos.
-
-    Args:
-        items (Iterable): A lista de itens a serem desduplicados.
-        key (function): Uma função para extrair a chave de comparação de cada item.
-
-    Returns:
-        list: Uma nova lista sem duplicatas.
+    (Esta função foi renomeada para evitar conflito com a nova, mas a nova será usada).
     """
     seen: Set = set()
     out = []
@@ -543,25 +637,43 @@ def _llm_resposta_final(question: str, context_snippets: List[str], name: Option
 
 # ==== Pipeline Principal de Resposta ====
 def answer_question(question: str, embeddings_model: HuggingFaceEmbeddings, vectorstore: FAISS, *, k: int = 5,
-                    fetch_k: int = 20) -> Dict[str, Any]:
+                    fetch_k: int = 20, debug: bool = False) -> Dict[str, Any]:
     """
     Pipeline principal para responder a uma pergunta usando uma abordagem híbrida (busca lexical e vetorial).
-
-    Args:
-        question (str): A pergunta do usuário.
-        embeddings_model (HuggingFaceEmbeddings): O modelo de embeddings para gerar vetores (não usado diretamente aqui, mas parte da arquitetura).
-        vectorstore (FAISS): O vetorstore FAISS para busca de documentos.
-        k (int): Número de documentos a serem retornados pela busca vetorial (usado como fallback se o reranker estiver desabilitado).
-        fetch_k (int): Número de documentos a serem buscados inicialmente para MMR (não mais usado diretamente, mas mantido por compatibilidade).
-
-    Returns:
-        Dict[str, Any]: Um dicionário contendo a resposta, citações, confiança e se o contexto foi encontrado.
     """
+    # INÍCIO DAS MODIFICAÇÕES (DEBUG)
+    t0 = _now()
+    dbg = {
+        "question": question,
+        "timing_ms": {},
+        "mq_variants": [],
+        "faiss": {"k": None, "candidates": []},
+        "rerank": {"name": RERANKER_NAME if RERANKER_ENABLED else None,
+                   "enabled": bool(RERANKER_ENABLED),
+                   "top_k": RERANKER_TOP_K if RERANKER_ENABLED else None,
+                   "scored": []},
+        "chosen": {"confidence": None},
+    }
+
     q = _norm_ws(question)
     if not q:
         return {"answer": "Não entendi a pergunta. Pode reformular?", "citations": [], "context_found": False}
 
+    # --- Debug container + cronômetro total ---
+    t0 = time.perf_counter()
+    dbg = {
+        "question": q,
+        "timing_ms": {},
+        "mq_variants": [],
+        "faiss": {"k": None, "candidates": []},
+        "rerank": {"enabled": True, "name": RERANKER_NAME, "top_k": RERANKER_TOP_K, "scored": []},
+        "chosen": {"confidence": None},
+    }
+
     # Estratégia 1: Busca Lexical por Nomes (rápida e precisa para contatos)
+    if debug:
+        dbg["route"] = "lexical"
+
     try:
         all_docs: List[Document] = list(getattr(vectorstore.docstore, "_dict", {}).values())
     except Exception:
@@ -585,17 +697,21 @@ def answer_question(question: str, embeddings_model: HuggingFaceEmbeddings, vect
     if lex_hits:
         # Se a busca lexical encontrou candidatos fortes, processa-os.
         sentence_snippets: List[str] = []
-        citations = []
+
+        # Coleta os documentos encontrados para usar na formatação da resposta
+        similar_docs = [d for d, _, _ in lex_hits]
+
         for doc, hits, _best in lex_hits:
             for s, _ in hits[:2]:
                 sentence_snippets.append(s)
-            citations.append(_as_citation(doc))
             if len(sentence_snippets) >= 6: break
 
         contacts = _extract_contacts(sentence_snippets)
         name_terms = [t for t in terms if t.isalpha()]
         name = _extract_name(sentence_snippets, name_terms[0]) if name_terms else None
-        dept = _guess_dept_from_source(citations[0]["source"]) if citations else None
+        # A citação antiga é usada apenas para adivinhar o depto, a nova será gerada
+        temp_citations = [_as_citation(doc) for doc in similar_docs]
+        dept = _guess_dept_from_source(temp_citations[0]["source"]) if temp_citations else None
 
         context_snippets = list(sentence_snippets)
         if name and (not contacts["phones"]):
@@ -619,20 +735,95 @@ def answer_question(question: str, embeddings_model: HuggingFaceEmbeddings, vect
             return {"answer": ask, "citations": [], "context_found": False, "needs_clarification": True}
 
         # Gera a resposta final com base nos dados extraídos.
-        final = _llm_resposta_final(q, context_snippets or sentence_snippets, name, dept, contacts)
-        return {"answer": final, "citations": citations[:3], "context_found": True}
+        t_llm = _now()
+        final_text = _llm_resposta_final(q, context_snippets or sentence_snippets, name, dept, contacts)
+        dbg["timing_ms"]["llm"] = _elapsed_ms(t_llm)
+
+        # 1) Coletar citações limpas a partir dos docs usados
+        citations_clean = _collect_citations_from_docs(similar_docs, max_sources=MAX_SOURCES)
+
+        # 2) Descobrir confiança se você tiver calculado (da Parte 4). Se não tiver, deixa None.
+        try:
+            conf  # noqa: F821
+        except NameError:
+            conf = None
+
+        if "conf" in locals() and conf is not None:
+            dbg["chosen"]["confidence"] = float(conf)
+
+        # 3) Formatar a resposta (Markdown) se habilitado; senão, mantém texto puro
+        answer_out = final_text
+        if STRUCTURED_ANSWER:
+            # A variável 'q' contém a pergunta do usuário
+            answer_out = _format_answer_markdown(q, final_text, citations_clean, conf)
+
+        # 4) Montar payload final
+        result = {
+            "answer": answer_out,
+            "citations": citations_clean,
+            "context_found": bool(similar_docs),
+        }
+        if conf is not None:
+            result["confidence"] = conf
+
+        dbg["timing_ms"]["total"] = _elapsed_ms(t0)
+
+        if debug and DEBUG_PAYLOAD:
+            result["debug"] = dbg
+
+        # --- DEBUG: snapshot sempre, mesmo na rota lexical ---
+        if debug:
+            # citations_clean já foi montado acima; similar_docs também existe
+            dbg["faiss"]["k"] = len(similar_docs)
+            dbg["faiss"]["candidates"] = [
+                {
+                    "source": (getattr(d, "metadata", {}) or {}).get("source"),
+                    "chunk": (getattr(d, "metadata", {}) or {}).get("chunk", 1),
+                    "preview": (getattr(d, "page_content", "") or "").strip().replace("\n", " ")[:160],
+                    "score": None,
+                } for d in similar_docs[:10]
+            ]
+            # se não houve rerank, preenche "scored" com fallback dos docs finais
+            if not dbg["rerank"].get("scored"):
+                dbg["rerank"]["scored"] = [
+                    {
+                        "source": (getattr(d, "metadata", {}) or {}).get("source"),
+                        "chunk": (getattr(d, "metadata", {}) or {}).get("chunk", 1),
+                        "preview": (getattr(d, "page_content", "") or "").strip().replace("\n", " ")[:160],
+                        "score": None,
+                    } for d in similar_docs[:5]
+                ]
+            # tempos
+            dbg["timing_ms"]["llm"] = dbg["timing_ms"].get("llm", 0.0)
+            dbg["timing_ms"]["total"] = round((time.perf_counter() - t0) * 1000.0, 1)
+            result["debug"] = dbg
+
+        _log_debug(f"Timing(ms): {dbg['timing_ms']}")
+        return result
 
     # Estratégia 2: Fallback para Busca Vetorial com Multi-Query e Rerank
     # Este bloco é executado se a busca lexical não encontrar resultados.
 
-    k_candidates_total = RERANKER_CANDIDATES if RERANKER_ENABLED else 10
+    # cronômetro do retrieval (do início de MQ/FAISS até antes do LLM)
+    t_retrieval0 = time.perf_counter()
+
+    # DEBUG: rota vetorial
+    if debug:
+        dbg.setdefault("route", "vector")
 
     # 1. Gera variações da pergunta para uma busca mais abrangente.
     queries = [q]
+    if debug:
+        dbg["mq_variants"] = list(queries)
     if MQ_ENABLED:
         queries = _gen_multi_queries(q, MQ_VARIANTS)
+    # DEBUG: expor as variantes geradas
+    if debug:
+        dbg.setdefault("mq_variants", list(queries))
+    _log_debug(f"MQ variants: {queries}")
 
     # 2. Distribui o "orçamento" de busca entre as queries geradas.
+    k_candidates_total = RERANKER_CANDIDATES if RERANKER_ENABLED else 10
     per_q = max(3, math.ceil(k_candidates_total / max(1, len(queries))))
 
     # 3. Busca para cada query e mescla os resultados.
@@ -645,6 +836,18 @@ def answer_question(question: str, embeddings_model: HuggingFaceEmbeddings, vect
             print(f"[ERROR] Falha na busca vetorial para a query '{query_variant}': {e}")
             continue
 
+    # DEBUG: snapshot dos candidatos crus (limitado a 10 p/ não inflar payload)
+    if debug:
+        dbg.setdefault("faiss", {})
+        dbg["faiss"]["k"] = per_q * len(queries)
+        dbg["faiss"]["candidates"] = [
+            {
+                "source": (d.metadata or {}).get("source"),
+                "chunk": (d.metadata or {}).get("chunk"),
+                "preview": (d.page_content or "").strip().replace("\n", " ")[:160]
+            } for d in cands[:10]
+        ]
+
     def _doc_key(d: Document) -> tuple:
         # Cria uma chave única para cada documento para desduplicação.
         src = d.metadata.get("source", "")
@@ -653,8 +856,66 @@ def answer_question(question: str, embeddings_model: HuggingFaceEmbeddings, vect
 
     cands = _dedupe_preserve_order(cands, key=_doc_key)
 
+    if debug:
+        # snapshot dos candidatos crus (antes do rerank), limitado a 10
+        dbg["faiss"]["k"] = len(cands)
+        dbg["faiss"]["candidates"] = [
+            {
+                "source": (getattr(d, "metadata", {}) or {}).get("source"),
+                "chunk": (getattr(d, "metadata", {}) or {}).get("chunk", 1),
+                "preview": (getattr(d, "page_content", "") or "").strip().replace("\n", " ")[:160],
+                "score": getattr(d, "score", None),
+            } for d in cands[:10]
+        ]
+        # tempo de retrieval
+        dbg["timing_ms"]["retrieval"] = round((time.perf_counter() - t_retrieval0) * 1000.0, 1)
+
+
+    # Coleta de dados de debug após busca FAISS
+    dbg["faiss"]["k"] = len(cands)
+    dbg["faiss"]["candidates"] = [_pack_doc(d, getattr(d, "score", None)) for d in cands]
+    dbg["timing_ms"]["retrieval"] = _elapsed_ms(t_retrieval0)
+    _log_debug(f"FAISS candidates: {len(cands)}")
+
     # 4. Reordena os candidatos com o reranker e obtém os scores de confiança.
-    docs, scores = _apply_rerank(q, cands)
+    reranker = _get_reranker()
+    if reranker is None:
+        # sem reranker: segue com candidatos originais
+        docs, scores = list(cands), [None] * len(cands)
+        if debug:
+            dbg.setdefault("rerank", {})
+            dbg["rerank"]["enabled"] = False
+            dbg["rerank"]["name"] = None
+            dbg["rerank"]["top_k"] = RERANKER_TOP_K
+            # opcional: mostrar os top_k “crus” como scored com score=None
+            dbg["rerank"]["scored"] = [
+                {"source": d["source"], "chunk": d["chunk"], "preview": d["preview"][:120], "score": None}
+                for d in docs[: min(RERANKER_TOP_K, len(docs))]
+            ]
+    else:
+        docs, scores = _apply_rerank(cands, top_k=RERANKER_TOP_K)
+        if debug:
+            dbg.setdefault("rerank", {})
+            dbg["rerank"]["enabled"] = True
+
+    # DEBUG: scores do reranker (top_k)
+    if debug:
+        dbg["rerank"]["enabled"] = bool(RERANKER_ENABLED)
+        dbg["rerank"]["name"] = RERANKER_NAME if RERANKER_ENABLED else None
+        dbg["rerank"]["top_k"] = RERANKER_TOP_K
+        dbg["rerank"]["scored"] = [
+            {
+                "source": (getattr(d, "metadata", {}) or {}).get("source"),
+                "chunk": (getattr(d, "metadata", {}) or {}).get("chunk", 1),
+                "preview": (getattr(d, "page_content", "") or "").strip().replace("\n", " ")[:160],
+                "score": float(s),
+            } for d, s in list(zip(docs, scores))[:5]
+        ]
+
+    # Coleta de dados de debug após rerank
+    dbg["rerank"]["scored"] = [_pack_doc(d, s) for d, s in zip(docs, scores)]
+    dbg["timing_ms"]["rerank_total"] = _elapsed_ms(t0)
+    _log_debug(f"Rerank top: {len(docs)}")
 
     # Função Sigmoid para normalizar scores, se necessário.
     def _sigmoid(x: float) -> float:
@@ -670,6 +931,9 @@ def answer_question(question: str, embeddings_model: HuggingFaceEmbeddings, vect
         conf = max_s if (0.0 <= max_s <= 1.0) else _sigmoid(max_s)
     else:
         conf = 0.0
+
+    if "conf" in locals() and conf is not None:
+        dbg["chosen"]["confidence"] = float(conf)
 
     # Log de diagnóstico para a busca vetorial.
     print(
@@ -699,11 +963,58 @@ def answer_question(question: str, embeddings_model: HuggingFaceEmbeddings, vect
         if len(body) > 500: body = body[:500].rstrip() + "..."
         context_snippets = [body]
 
-    citations = [_as_citation(d) for d in docs[:3]]
     # Gera a resposta final com o LLM, mas sem metadados de nome/depto, pois esta é uma busca genérica.
-    final = _llm_resposta_final(q, context_snippets, None, None, {"emails": [], "phones": []})
+    t_llm = _now()
+    # DEBUG: rota lexical
+    if debug:
+        dbg.setdefault("route", "lexical")
 
-    if not final:
-        final = " ".join(context_snippets)
+    final_text = _llm_resposta_final(q, context_snippets, None, None, {"emails": [], "phones": []})
+    dbg["timing_ms"]["llm"] = _elapsed_ms(t_llm)
 
-    return {"answer": final, "citations": citations, "context_found": True, "confidence": conf}
+    if not final_text:
+        final_text = " ".join(context_snippets)
+
+    # A variável 'docs' aqui contém os documentos finais após o rerank
+    similar_docs = docs
+
+    # 1) Coletar citações limpas a partir dos docs usados
+    citations_clean = _collect_citations_from_docs(similar_docs, max_sources=MAX_SOURCES)
+
+    # DEBUG: sempre dar um snapshot dos docs finais (independe da rota)
+    if debug:
+        dbg.setdefault("faiss", {})
+        dbg["faiss"]["k"] = len(similar_docs)
+        # se a rota foi lexical, não teremos scores; tudo bem, vai None
+        dbg["faiss"]["candidates"] = [_pack_doc(d, getattr(d, "score", None)) for d in similar_docs[:10]]
+        # se o rerank não preencheu "scored", faça um fallback com os docs finais
+        dbg.setdefault("rerank", {})
+        if not dbg["rerank"].get("scored"):
+            dbg["rerank"]["scored"] = [_pack_doc(d, getattr(d, "score", None)) for d in similar_docs[:5]]
+
+    # 2) Formatar a resposta (Markdown) se habilitado; senão, mantém texto puro
+    answer_out = final_text
+    if STRUCTURED_ANSWER:
+        # A variável 'q' contém a pergunta do usuário
+        answer_out = _format_answer_markdown(q, final_text, citations_clean, conf)
+
+    # 3) Montar payload final
+    result = {
+        "answer": answer_out,
+        "citations": citations_clean,
+        "context_found": bool(similar_docs),
+    }
+    if conf is not None:
+        result["confidence"] = conf
+
+    dbg["timing_ms"]["total"] = _elapsed_ms(t0)
+
+    if debug:
+        # se llm foi chamado em algum momento, preencha dbg["timing_ms"]["llm"] nesse ponto do seu fluxo.
+        # por enquanto, mantemos 0.0 caso não tenha medição específica.
+        dbg["timing_ms"]["llm"] = dbg["timing_ms"].get("llm", 0.0)
+        dbg["timing_ms"]["total"] = round((time.perf_counter() - t0) * 1000.0, 1)
+        result["debug"] = dbg
+
+    _log_debug(f"Timing(ms): {dbg['timing_ms']}")
+    return result
