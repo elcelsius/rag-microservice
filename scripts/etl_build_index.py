@@ -20,6 +20,10 @@ from __future__ import annotations
 import io
 import os
 import sys
+import argparse
+import glob
+import importlib.util
+from pathlib import Path
 from typing import List
 
 # LangChain é usado para dividir textos, criar embeddings e gerenciar o índice vetorial.
@@ -72,6 +76,48 @@ def _read_txt_like(path: str) -> str:
         print(f"[ETL] Falha lendo (bin) {path}: {e}", flush=True)
         return ""
 
+def _load_custom_loaders(loaders_dir: str):
+    """Carrega dinamicamente loaders customizados de um diretório.
+    Retorna dict {'.ext': callable(path)->str}."""
+    mapping = {}
+    ld = Path(loaders_dir)
+    if not ld.exists():
+        return mapping
+    for py in ld.glob("*.py"):
+        try:
+            spec = importlib.util.spec_from_file_location(py.stem, str(py))
+            mod = importlib.util.module_from_spec(spec)
+            assert spec and spec.loader
+            spec.loader.exec_module(mod)
+            # convencao: funcoes read_<ext>(path) -> str
+            for name in dir(mod):
+                if name.startswith("read_"):
+                    ext = "." + name.split("_", 1)[1]
+                    fn = getattr(mod, name)
+                    if callable(fn):
+                        mapping[ext.lower()] = fn
+        except Exception as e:
+            print(f"[ETL] Ignorando loader {py}: {e}", flush=True)
+    return mapping
+
+
+def _read_any(path: str, custom: dict[str, callable]) -> str:
+    ext = Path(path).suffix.lower()
+    # prioridade: loader customizado
+    if ext in custom:
+        try:
+            return custom[ext](path) or ""
+        except Exception as e:
+            print(f"[ETL] Loader custom falhou {path}: {e}", flush=True)
+            return ""
+    # fallback nativo
+    if ext in {".txt", ".md"}:
+        return _read_txt_like(path)
+    if ext == ".pdf":
+        return _read_pdf(path)
+    if ext == ".docx":
+        return _read_docx(path)
+    return ""
 
 def _read_pdf(path: str) -> str:
     """Extrai texto de um arquivo PDF, página por página."""
@@ -189,6 +235,62 @@ def main() -> int:
     print(f"[ETL] Índice FAISS salvo em: {OUT_DIR}", flush=True)
     return 0
 
+def main():
+    parser = argparse.ArgumentParser(description="ETL para FAISS (RAG).")
+    parser.add_argument("--data", default=os.environ.get("DATA_DIR", DATA_ROOT))
+    parser.add_argument("--out", default=os.environ.get("FAISS_OUT_DIR", OUT_DIR))
+    parser.add_argument("--embeddings", default=os.environ.get("EMBEDDINGS_MODEL", EMB_MODEL))
+    parser.add_argument("--chunk-size", type=int, default=800)
+    parser.add_argument("--chunk-overlap", type=int, default=120)
+    parser.add_argument("--exts", default="txt,md,pdf,docx",
+                        help="lista separada por vírgula, ex: txt,md,pdf,docx")
+    parser.add_argument("--loaders", default=os.environ.get("LOADERS_DIR", "./loaders"))
+    args = parser.parse_args()
+
+    data_dir = args.data
+    out_dir = args.out
+    emb_model = args.embeddings
+    exts = {"."+e.strip().lower() for e in args.exts.split(",") if e.strip()}
+
+    # carregar loaders custom
+    custom_loaders = _load_custom_loaders(args.loaders)
+
+    print(f"[ETL] data={data_dir} out={out_dir} model={emb_model} exts={sorted(exts)}", flush=True)
+    print(f"[ETL] loaders_custom={sorted(custom_loaders.keys()) or 'nenhum'}", flush=True)
+
+    # splitter
+    splitter = RecursiveCharacterTextSplitter(
+        chunk_size=args.chunk_size,
+        chunk_overlap=args.chunk_overlap
+    )
+
+    # coleta arquivos
+    files = _walk_files(data_dir)
+    texts, metas = [], []
+    for path in files:
+        if Path(path).suffix.lower() not in exts:
+            continue
+        txt = _read_any(path, custom_loaders).strip()
+        if not txt:
+            print(f"[ETL] Vazio/indecifrável: {path}", flush=True)
+            continue
+        chunks = splitter.split_text(txt)
+        for i, ch in enumerate(chunks):
+            texts.append(ch)
+            metas.append({"source": path, "chunk": i + 1})
+
+    if not texts:
+        texts = ["Base sem documentos. Adicione .txt/.md/.pdf em /app/data e recrie o índice."]
+        metas = [{"source": "dummy", "chunk": 1}]
+
+    print(f"[ETL] Gerando embeddings com {emb_model} para {len(texts)} chunks ...", flush=True)
+    embeddings = HuggingFaceEmbeddings(model_name=emb_model)
+
+    vs = FAISS.from_texts(texts=texts, embedding=embeddings, metadatas=metas)
+    Path(out_dir).mkdir(parents=True, exist_ok=True)
+    vs.save_local(out_dir)
+    print(f"[ETL] Índice FAISS salvo em: {out_dir}", flush=True)
+    return 0
 
 # Ponto de entrada do script.
 if __name__ == "__main__":

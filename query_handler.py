@@ -16,19 +16,23 @@ from langchain_community.vectorstores import FAISS
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain.schema import Document
 from llm_client import load_prompt, call_llm
-from sentence_transformers import CrossEncoder
+
+try:
+    from sentence_transformers import CrossEncoder  # reranker
+except Exception:  # se não tiver sentence_transformers, segue sem rerank
+    CrossEncoder = None  # type: ignore
 
 # ==== Configurações do Reranker ====
 # Ativa ou desativa o uso do reranker para reordenar os resultados da busca.
-RERANKER_ENABLED = os.getenv("RERANKER_ENABLED", "true").lower() == "true"
+RERANKER_ENABLED = os.environ.get("RERANKER_ENABLED", "true").lower() == "true"
 # Nome do modelo CrossEncoder a ser usado para o rerank.
-RERANKER_NAME = os.getenv("RERANKER_NAME", "jinaai/jina-reranker-v2-base-multilingual")
+RERANKER_NAME = os.environ.get("RERANKER_NAME", "jinaai/jina-reranker-v2-base-multilingual")
 # Número de documentos candidatos a serem enviados para o reranker.
 RERANKER_CANDIDATES = int(os.getenv("RERANKER_CANDIDATES", "30"))
 # Número de documentos a serem retornados pelo reranker (top K).
-RERANKER_TOP_K = int(os.getenv("RERANKER_TOP_K", "5"))
+RERANKER_TOP_K = int(os.environ.get("RERANKER_TOP_K", "5"))
 # Comprimento máximo da sequência para o modelo reranker.
-RERANKER_MAX_LEN = int(os.getenv("RERANKER_MAX_LEN", "4096"))
+RERANKER_MAX_LEN = int(os.environ.get("RERANKER_MAX_LEN", "512"))
 
 # ==== Configurações de Multi-Query e Confiança ====
 # Ativa ou desativa a geração de múltiplas variações da pergunta do usuário para busca.
@@ -117,7 +121,8 @@ def _pack_doc(doc, score=None, limit_preview=160):
         "source": meta.get("source") or meta.get("file") or "desconhecido",
         "chunk": int(meta.get("chunk") or 1),
         "department": meta.get("department") or "",
-        "score": None if score is None else float(score),
+        # GARANTIA: sempre float, nunca None
+        "score": 0.0 if score is None else float(score),
         "preview": txt,
     }
 
@@ -163,13 +168,22 @@ SYNONYMS = TERMS["synonyms"]  # dict sigla -> [expansões]
 BOOSTS = TERMS["boosts"]  # dict de boosts opcionais
 print(f"[DICT] departamentos={len(DEPARTMENTS)} aliases={len(ALIASES)} synonyms={len(SYNONYMS)}")
 
+#### RERANK -----------------------------------------------------------------------
 # Variável global para armazenar o modelo do reranker e evitar recarregá-lo.
-_reranker_model = None
+_reranker_model = None  # cache em memória
+
+def _safe_score(x):
+    try:
+        return float(x)
+    except Exception:
+        return float("-inf")
 
 def _get_reranker():
-    """Carrega o modelo CrossEncoder do reranker sob demanda e o mantém em memória."""
+    """Carrega CrossEncoder sob demanda. Nunca levanta exceção para cima."""
     global _reranker_model
-    if _reranker_model is None and RERANKER_ENABLED:
+    if not RERANKER_ENABLED or CrossEncoder is None:
+        return None
+    if _reranker_model is None:
         try:
             print(f"[INFO] Carregando o modelo reranker: {RERANKER_NAME}")
             _reranker_model = CrossEncoder(
@@ -179,91 +193,127 @@ def _get_reranker():
                 tokenizer_args={"trust_remote_code": True},
             )
         except Exception as e:
-            # Não derruba a resposta: desliga o reranker nesta execução
             print(f"[WARN] Falha ao carregar reranker '{RERANKER_NAME}': {e}. Prosseguindo sem rerank.")
             _reranker_model = None
     return _reranker_model
 
-def _apply_rerank(query: str, docs: List[Document]) -> Tuple[List[Document], List[float]]:
+def _apply_rerank(cands, top_k=5, user_query: str | None = None, dbg: dict | None = None):
     """
-    Reclassifica uma lista de documentos com base na sua relevância para a consulta,
-    aplicando um bônus (boost) para documentos que mencionam departamentos citados na pergunta.
-
-    Args:
-        query (str): A consulta do usuário.
-        docs (List[Document]): Lista de documentos do LangChain a serem reranqueados.
-
-    Returns:
-        Tuple[List[Document], List[float]]: Uma tupla contendo a lista de documentos reordenada
-                                            e a lista de seus respectivos scores de confiança.
+    cands: lista de dicts com {"text","preview","source","chunk", "idx" opcional}
+    Retorna (docs_ordenados, scores_float) ORDENADOS por score (desc) para TODOS os candidatos.
+    - Garante que scores SEMPRE sejam floats.
+    - Preenche debug.rerank.* e debug.timing_ms.reranker (ms).
     """
-    # Retorna listas vazias se não houver documentos para processar.
-    if not docs:
-        return [], []
-    # Se o reranker estiver desabilitado, retorna os top K documentos com score 0.0.
-    if not RERANKER_ENABLED:
-        top = docs[:min(len(docs), RERANKER_TOP_K)]
-        return top, [0.0] * len(top)
-
-    rr = _get_reranker()
-    # Se o modelo não puder ser carregado, retorna os top K documentos com score 0.0.
-    if rr is None:
-        top = docs[:min(len(docs), RERANKER_TOP_K)]
-        return top, [0.0] * len(top)
-
-    # Cria pares de (consulta, conteúdo do documento) para o modelo.
-    pairs = [(query, getattr(d, "page_content", str(d))) for d in docs]
-    # O modelo prediz os scores. Modelos como Jina v2 retornam scores de 0 a 1 (maior = melhor).
-    scores = rr.predict(pairs)
-
-    # --- boost por departamento (leve) ---
-    # Identifica slugs de departamento na pergunta para dar um bônus aos documentos correspondentes.
-    wanted = set(_dept_slugs_in_question(query))
-    boosted: List[Tuple[object, float]] = []
-    for d, s in zip(docs, scores):
-        b = float(s)
-        # Se algum slug de departamento foi encontrado na pergunta...
-        if wanted:
-            meta = getattr(d, "metadata", {}) or {}
-            # Concatena os campos de metadados onde o departamento pode ser encontrado.
-            src = " ".join([
-                str(meta.get("source") or ""),
-                str(meta.get("file") or ""),
-                str(meta.get("department") or ""),
-            ])
-            src_norm = _strip_accents_lower(src)
-            # Verifica se algum dos slugs desejados está nos metadados do documento.
-            if any(slug in src_norm for slug in wanted):
-                # Aplica um boost padrão para o documento correspondente.
-                b += 0.05
-                # Aplica um boost adicional opcional, configurado no arquivo YAML.
-                # Ex: boosts.department.<slug>
-                dep_boosts = (BOOSTS.get("department") or {})
-                for slug in wanted:
-                    w = dep_boosts.get(slug)
-                    if isinstance(w, (int, float)):
-                        # O valor no YAML é tratado como um percentual (ex: 1.5 -> +0.015)
-                        b += float(w) * 0.01
-        boosted.append((d, b))
-
-    # Ordena os documentos com base nos scores (possivelmente com boost).
-    ranked = sorted(boosted, key=lambda x: float(x[1]), reverse=True)
-
-    # Seleciona os top K pares.
-    top_pairs = ranked[:RERANKER_TOP_K]
-    if not top_pairs:
-        print(f"[RERANK/BOOST] wanted={list(wanted)} top=0")
+    if not cands:
+        if dbg is not None:
+            dbg.setdefault("rerank", {})
+            dbg["rerank"]["enabled"] = False
+            dbg["rerank"]["name"] = None
+            dbg["rerank"]["top_k"] = top_k
+            dbg.setdefault("timing_ms", {})
+            dbg["timing_ms"]["reranker"] = 0.0
         return [], []
 
-    # Separa os documentos e os scores em duas listas distintas.
-    top_docs = [d for d, s in top_pairs]
-    top_scores = [float(s) for d, s in top_pairs]
+    model = _get_reranker()
+    # Caso não haja modelo, degrade graceful mantendo floats 0.0
+    if model is None:
+        docs = list(cands)
+        scores = [0.0] * len(docs)
+        if dbg is not None:
+            dbg.setdefault("rerank", {})
+            dbg["rerank"]["enabled"] = False
+            dbg["rerank"]["name"] = None
+            dbg["rerank"]["top_k"] = top_k
+            dbg["rerank"]["scored"] = [
+                {
+                    "source": d.get("source"),
+                    "chunk": d.get("chunk"),
+                    "preview": (d.get("preview") or d.get("text",""))[:120],
+                    "score": 0.0,
+                }
+                for d in docs[: min(top_k, len(docs))]
+            ]
+            dbg.setdefault("timing_ms", {})
+            dbg["timing_ms"]["reranker"] = 0.0
+        return docs, scores
 
-    # Log para depuração do processo de rerank e boost.
-    print(f"[RERANK/BOOST] wanted={list(wanted)} top={len(top_docs)}")
+    if user_query is None:
+        user_query = ""
 
-    return top_docs, top_scores
+    pairs = [(user_query, d.get("text","") or "") for d in cands]
 
+    t_rerank0 = time.perf_counter()
+    try:
+        raw_scores = model.predict(pairs)  # sequência de floats
+        # Sanitiza possíveis None/NaN do modelo (por segurança)
+        scores_clean = []
+        for s in raw_scores:
+            try:
+                v = float(s)
+            except Exception:
+                v = 0.0
+            if math.isnan(v):  # requer 'import math' no topo do arquivo
+                v = 0.0
+            scores_clean.append(v)
+        raw_scores = scores_clean
+    except Exception as e:
+        print(f"[WARN] Rerank falhou em runtime: {e}. Prosseguindo sem rerank.")
+        docs = list(cands)
+        scores = [0.0] * len(docs)
+        if dbg is not None:
+            dbg.setdefault("rerank", {})
+            dbg["rerank"]["enabled"] = False
+            dbg["rerank"]["name"] = None
+            dbg["rerank"]["top_k"] = top_k
+            dbg.setdefault("timing_ms", {})
+            dbg["timing_ms"]["reranker"] = round((time.perf_counter() - t_rerank0) * 1000.0, 1)
+        return docs, scores
+
+    # Ordena TODOS os candidatos por score desc; truncagem apenas para debug.exibição
+    order_all = sorted(range(len(raw_scores)), key=lambda i: float(raw_scores[i]), reverse=True)
+    docs_sorted = [cands[i] for i in order_all]
+    scores_sorted = [float(raw_scores[i]) for i in order_all]
+
+    if dbg is not None:
+        dbg.setdefault("rerank", {})
+        dbg["rerank"]["enabled"] = True
+        dbg["rerank"]["name"] = RERANKER_NAME
+        dbg["rerank"]["top_k"] = top_k
+        dbg["rerank"]["scored"] = [
+            {
+                "source": docs_sorted[i].get("source"),
+                "chunk": docs_sorted[i].get("chunk"),
+                "preview": (docs_sorted[i].get("preview") or docs_sorted[i].get("text",""))[:120],
+                "score": scores_sorted[i],
+            }
+            for i in range(min(top_k, len(docs_sorted)))
+        ]
+        dbg.setdefault("timing_ms", {})
+        dbg["timing_ms"]["reranker"] = round((time.perf_counter() - t_rerank0) * 1000.0, 1)
+
+    return docs_sorted, scores_sorted
+
+
+def _build_candidates_from_docs(docs):
+    """
+    Normaliza resultados do FAISS para candidatos com texto completo.
+    Aceita listas de `Document` ou pares (Document, score).
+    """
+    cands = []
+    for i, d in enumerate(docs):
+        doc = d[0] if isinstance(d, (tuple, list)) and len(d) >= 1 else d
+        meta = getattr(doc, "metadata", {}) or {}
+        text = getattr(doc, "page_content", "") or ""
+        cands.append({
+            "idx": i,  # preserva o índice original para reordenar Documentos
+            "text": text,
+            "preview": text[:200],
+            "source": meta.get("source"),
+            "chunk": meta.get("chunk"),
+        })
+    return cands
+
+# --- FIM helpers RERANK ---
 
 # ==== Utilitários de Geração de Multi-Query e Processamento de Texto ====
 
@@ -780,17 +830,20 @@ def answer_question(question: str, embeddings_model: HuggingFaceEmbeddings, vect
                     "source": (getattr(d, "metadata", {}) or {}).get("source"),
                     "chunk": (getattr(d, "metadata", {}) or {}).get("chunk", 1),
                     "preview": (getattr(d, "page_content", "") or "").strip().replace("\n", " ")[:160],
-                    "score": None,
+                    "score": 0.0,
                 } for d in similar_docs[:10]
             ]
-            # se não houve rerank, preenche "scored" com fallback dos docs finais
+            # não houve rerank nesta rota — manter scores float 0.0
+            dbg.setdefault("rerank", {})
+            dbg["rerank"]["enabled"] = False
+            dbg["rerank"]["name"] = None
             if not dbg["rerank"].get("scored"):
                 dbg["rerank"]["scored"] = [
                     {
                         "source": (getattr(d, "metadata", {}) or {}).get("source"),
                         "chunk": (getattr(d, "metadata", {}) or {}).get("chunk", 1),
                         "preview": (getattr(d, "page_content", "") or "").strip().replace("\n", " ")[:160],
-                        "score": None,
+                        "score": 0.0,
                     } for d in similar_docs[:5]
                 ]
             # tempos
@@ -825,6 +878,7 @@ def answer_question(question: str, embeddings_model: HuggingFaceEmbeddings, vect
     # 2. Distribui o "orçamento" de busca entre as queries geradas.
     k_candidates_total = RERANKER_CANDIDATES if RERANKER_ENABLED else 10
     per_q = max(3, math.ceil(k_candidates_total / max(1, len(queries))))
+    t_retrieval0 = time.perf_counter()
 
     # 3. Busca para cada query e mescla os resultados.
     cands = []
@@ -857,6 +911,8 @@ def answer_question(question: str, embeddings_model: HuggingFaceEmbeddings, vect
     cands = _dedupe_preserve_order(cands, key=_doc_key)
 
     if debug:
+        dbg.setdefault("timing_ms", {})
+        dbg["timing_ms"]["retrieval"] = round((time.perf_counter() - t_retrieval0) * 1000.0, 1)
         # snapshot dos candidatos crus (antes do rerank), limitado a 10
         dbg["faiss"]["k"] = len(cands)
         dbg["faiss"]["candidates"] = [
@@ -880,41 +936,54 @@ def answer_question(question: str, embeddings_model: HuggingFaceEmbeddings, vect
     # 4. Reordena os candidatos com o reranker e obtém os scores de confiança.
     reranker = _get_reranker()
     if reranker is None:
-        # sem reranker: segue com candidatos originais
-        docs, scores = list(cands), [None] * len(cands)
+        # sem reranker: segue com candidatos originais (scores sempre float)
+        docs, scores = list(cands), [0.0] * len(cands)
         if debug:
             dbg.setdefault("rerank", {})
             dbg["rerank"]["enabled"] = False
             dbg["rerank"]["name"] = None
             dbg["rerank"]["top_k"] = RERANKER_TOP_K
-            # opcional: mostrar os top_k “crus” como scored com score=None
             dbg["rerank"]["scored"] = [
-                {"source": d["source"], "chunk": d["chunk"], "preview": d["preview"][:120], "score": None}
+                {
+                    "source": (getattr(d, "metadata", {}) or {}).get("source"),
+                    "chunk": (getattr(d, "metadata", {}) or {}).get("chunk", 1),
+                    "preview": (getattr(d, "page_content", "") or "").strip().replace("\n", " ")[:160],
+                    "score": 0.0,
+                }
                 for d in docs[: min(RERANKER_TOP_K, len(docs))]
             ]
+            dbg.setdefault("timing_ms", {})
+            dbg["timing_ms"]["reranker"] = 0.0
     else:
-        docs, scores = _apply_rerank(cands, top_k=RERANKER_TOP_K)
+        # 4. Rerank com candidatos normalizados; usar somente floats
+        cand_dicts = _build_candidates_from_docs(cands)
+        docs_norm_sorted, scores_sorted = _apply_rerank(
+            cand_dicts, top_k=RERANKER_TOP_K, user_query=question, dbg=dbg if debug else None
+        )
+
+        # Reordenar os Document originais pela mesma ordem (usando o índice "idx" dos normalizados)
+        order = [d.get("idx") for d in docs_norm_sorted if d.get("idx") is not None]
+        # Garante corte em top_k e evita Nones
+        order = [int(i) for i in order if isinstance(i, int)][: min(RERANKER_TOP_K, len(order))]
+
+        docs = [cands[i] for i in order]
+        scores = [scores_sorted[i] for i in range(len(order))]  # já estão floats e ordenados
+
         if debug:
             dbg.setdefault("rerank", {})
             dbg["rerank"]["enabled"] = True
-
-    # DEBUG: scores do reranker (top_k)
-    if debug:
-        dbg["rerank"]["enabled"] = bool(RERANKER_ENABLED)
-        dbg["rerank"]["name"] = RERANKER_NAME if RERANKER_ENABLED else None
-        dbg["rerank"]["top_k"] = RERANKER_TOP_K
-        dbg["rerank"]["scored"] = [
-            {
-                "source": (getattr(d, "metadata", {}) or {}).get("source"),
-                "chunk": (getattr(d, "metadata", {}) or {}).get("chunk", 1),
-                "preview": (getattr(d, "page_content", "") or "").strip().replace("\n", " ")[:160],
-                "score": float(s),
-            } for d, s in list(zip(docs, scores))[:5]
-        ]
-
-    # Coleta de dados de debug após rerank
-    dbg["rerank"]["scored"] = [_pack_doc(d, s) for d, s in zip(docs, scores)]
-    dbg["timing_ms"]["rerank_total"] = _elapsed_ms(t0)
+            dbg["rerank"]["name"] = RERANKER_NAME
+            dbg["rerank"]["top_k"] = RERANKER_TOP_K
+            # Mostra os top_k (já ordenados) com scores float
+            dbg["rerank"]["scored"] = [
+                {
+                    "source": (getattr(d, "metadata", {}) or {}).get("source"),
+                    "chunk": (getattr(d, "metadata", {}) or {}).get("chunk", 1),
+                    "preview": (getattr(d, "page_content", "") or "").strip().replace("\n", " ")[:160],
+                    "score": float(scores[i]),
+                }
+                for i, d in enumerate(docs)
+            ]
     _log_debug(f"Rerank top: {len(docs)}")
 
     # Função Sigmoid para normalizar scores, se necessário.

@@ -1,143 +1,228 @@
-# 🤖 AI Copilot - Serviço de ETL e RAG Genérico
+# 🧠 rag-microservice — README Completo (CPU + GPU)
 
-Este projeto implementa um pipeline completo de **Retrieval-Augmented Generation (RAG)**, projetado para servir como o núcleo de um copiloto de IA para sistemas web complexos.
-
-O objetivo é **ler, processar e indexar** uma base de conhecimento privada (documentação, código-fonte, etc.) e fornecer uma interface de consulta inteligente, capaz de responder perguntas complexas com alta precisão, utilizando a API do **Google Gemini**.
-
-O sistema é otimizado para ambientes com **GPU NVIDIA**, mas é totalmente compatível com ambientes **apenas com CPU** através de scripts dedicados.
+Microserviço de **RAG (Retrieval-Augmented Generation)** com **Flask**, **FAISS**, **sentence-transformers** e UI estática via **nginx**. Suporta **CPU** e **GPU (CUDA)**. Inclui **reranker** opcional (CrossEncoder) e health-checks prontos para front-end.
 
 ---
 
-## 📋 Principais Funcionalidades
-- **Pipeline de ETL Inteligente**: Suporta múltiplos formatos de arquivo e oferece dois modos de treinamento: rebuild completo ou atualização incremental (apenas para arquivos novos).
-- **Base de Conhecimento Vetorial**: Utiliza *sentence-transformers* para gerar embeddings e **FAISS** para busca vetorial eficiente.
-- **Portabilidade CPU/GPU**: Ambiente containerizado com suporte explícito para execução acelerada por **CUDA** ou em modo **CPU-only**.
-- **Persistência de Metadados**: Armazenamento de chunks e rastreamento de arquivos processados em **PostgreSQL**.
-- **Agente de IA com LangGraph**: Um agente inteligente avalia as perguntas antes de agir, decidindo entre responder ou pedir mais informações.
-- **Geração de Respostas com LLM**: Integração com a API do **Google Gemini**, com modelo configurável via variáveis de ambiente.
+## 📦 Visão geral da stack
+
+- **Python 3.11**
+- **Flask** — API (`/query`, `/healthz`)
+- **LangChain (community + text-splitters)** — split de textos
+- **FAISS** — índice vetorial persistido em `/app/vector_store/faiss_index`
+- **Embeddings** — `intfloat/multilingual-e5-large` (Hugging Face)
+- **Reranker opcional** — `jinaai/jina-reranker-v2-base-multilingual` (CrossEncoder)
+- **nginx** — serve UI (8080) e proxy para API (`/api/*` → 5000)
+
+Containers (CPU): `ai_etl`, `ai_projeto_api`, `ai_web_ui`, `ai_postgres` (opcional).
 
 ---
 
-## 🛠️ Stack de Tecnologias
-- **Linguagem**: Python 3.11
-- **Orquestração**: Docker & Docker Compose
-- **IA & Machine Learning**:
-  - LangChain, LangGraph
-  - Sentence Transformers (*all-MiniLM-L6-v2*)
-  - FAISS-GPU / FAISS-CPU
-  - PyTorch
-  - Google Generative AI (Gemma, Gemini)
-- **Banco de Dados**: PostgreSQL 15
-- **Ambiente Base**: Imagem NVIDIA CUDA (GPU) ou Python Slim (CPU)
+## 🗂 Estrutura de diretórios (essencial)
+
+```
+rag-microservice/
+├─ config/
+│  └─ ontology/terms.yml        # dicionário/ontologia de termos
+├─ data/                        # base de documentos (TXT/MD/PDF/DOCX), com subpastas
+├─ loaders/                     # leitores personalizados por tipo (code/docx/md/pdf/txt)
+├─ prompts/                     # moldam o fluxo de resposta
+│  ├─ pedir_info_prompt.txt
+│  ├─ resposta_final_prompt.txt
+│  └─ triagem_prompt.txt
+├─ scripts/
+│  ├─ etl_build_index.py        # ETL que gera índice FAISS
+│  ├─ inicia_site_cpu.sh        # sobe tudo (CPU) + abre UI
+│  ├─ inicia_site_gpu.sh        # sobe tudo (GPU) + abre UI
+│  ├─ treinar_ia_cpu.sh         # executa ETL (CPU)
+│  └─ treinar_ia_gpu.sh         # executa ETL (GPU)
+├─ web_ui/
+│  ├─ html/index.html           # UI: usa /api/query e /api/healthz
+│  └─ conf.d/default.conf       # nginx: /api/* → ai_projeto_api:5000
+├─ api.py                       # Flask app (endpoints)
+├─ query_handler.py             # RAG + reranker + debug/telemetria
+└─ docker-compose.*.yml         # orquestração CPU/GPU
+```
+
+**Papel das pastas-chave**  
+- `config/ontology/terms.yml`: dicionário/ontologia de termos usados para triagem ou normalização de entidades/consultas.  
+- `data/`: fontes de conhecimento; pode ter **subpastas**. O ETL lê recursivamente.  
+- `loaders/`: leitores por tipo — cada `*_loader.py` implementa extração de texto para seu formato.  
+- `prompts/`: textos dos prompts do pipeline (`triagem`, `pedir_info`, `resposta_final`).  
+- `scripts/`: automações para iniciar serviços e executar ETL.
 
 ---
 
-## 🚀 Configuração do Ambiente
+## 🔧 Variáveis de ambiente (API)
 
-### ✅ Pré-requisitos
-- Docker Desktop
-- WSL2 (para usuários Windows)
-- **Para modo GPU**: Drivers NVIDIA com suporte a CUDA instalados no host.
+No serviço `ai_projeto_api`:
 
-### 🔧 Instalação
-1. Clone o repositório:
-   ```bash
-   git clone [https://github.com/elcelsius/ai_etl_project.git](https://github.com/elcelsius/ai_etl_project.git)
-   cd ai_etl_project
-   ```
-2. Configure as variáveis de ambiente (copie `.env.example` para `.env` e preencha sua `GOOGLE_API_KEY`).
-3. Adicione seus arquivos de documentação na pasta `data/`.
-4. Dê permissão de execução para os scripts:
-   ```bash
-   chmod +x scripts/*.sh
-   ```
+- `FAISS_STORE_DIR=/app/vector_store/faiss_index`
+- `EMBEDDINGS_MODEL=intfloat/multilingual-e5-large`
+- `RERANKER_ENABLED=true|false`
+- `RERANKER_NAME=jinaai/jina-reranker-v2-base-multilingual`
+- `RERANKER_TOP_K=5`
+- `RERANKER_MAX_LEN=512`
+- `REQUIRE_LLM_READY=false` (evita travar o healthz em LLM externo)
+
+> Dica: se o reranker não for necessário (ou se a máquina é limitada), use `RERANKER_ENABLED=false` — o backend faz fallback seguro com `score=0.0`.
 
 ---
 
-## 💡 Fluxo de Trabalho (Como Usar)
-Escolha o ambiente de acordo com seu hardware.
+## 🏗 ETL (construção do índice)
 
-### Opção 1: Ambiente com GPU NVIDIA (Recomendado)
-Use os scripts localizados em `scripts/` com o sufixo `_gpu`.
+O ETL percorre `./data`, lê arquivos suportados, divide em chunks e gera embeddings, salvando um índice **FAISS** persistente.  
+- Script principal: `scripts/etl_build_index.py` (executado nos containers `ai_etl`).  
+- Parâmetros (via env): `DATA_DIR` (padrão `/app/data`), `FAISS_OUT_DIR` (padrão `/app/vector_store/faiss_index`), `EMBEDDINGS_MODEL`.
 
-**Para treinar a IA (ETL):**
+**CPU**:
 ```bash
-# Rebuild completo (lento, apaga tudo e refaz)
-./scripts/treinar_ia_gpu.sh
-
-# Atualização incremental (rápido, adiciona somente arquivos novos)
-./scripts/treinar_ia_gpu.sh --update
+docker-compose -f docker-compose.cpu.yml build ai_etl
+docker-compose -f docker-compose.cpu.yml run --rm ai_etl \
+  python scripts/etl_build_index.py --data ./data --out /app/vector_store/faiss_index
 ```
 
-**Para iniciar o site e conversar pela interface web:**
+**GPU** (se preferir rodar ETL igual, também funciona em CPU; GPU é opcional):
 ```bash
-./scripts/inicia_site_gpu.sh
-```
-
-**Para conversar pelo terminal:**
-```bash
-./scripts/ai_etl_conv_term_gpu.sh
-```
-
-### Opção 2: Ambiente Apenas com CPU
-Use os scripts localizados em `scripts/` com o sufixo `_cpu`.
-
-**Para treinar a IA (ETL):**
-```bash
-# Rebuild completo (lento, apaga tudo e refaz)
-./scripts/treinar_ia_cpu.sh
-
-# Atualização incremental (rápido, adiciona somente arquivos novos)
-./scripts/treinar_ia_cpu.sh --update
-```
-
-**Para iniciar o site e conversar pela interface web:**
-```bash
-./scripts/inicia_site_cpu.sh
-```
-
-**Para conversar pelo terminal:**
-```bash
-./scripts/ai_etl_conv_term_cpu.sh
+docker-compose -f docker-compose.gpu.yml build ai_etl
+docker-compose -f docker-compose.gpu.yml run --rm ai_etl \
+  python scripts/etl_build_index.py --data ./data --out /app/vector_store/faiss_index
 ```
 
 ---
 
-## ⚙️ Como o Sistema Funciona
+## 🚀 Subir serviços
 
-O projeto é dividido em três componentes principais: o pipeline de ETL, o serviço de API RAG e o agente de IA.
+### CPU
+Opção A (scripts prontos):
+```bash
+./scripts/treinar_ia_cpu.sh      # roda ETL
+./scripts/inicia_site_cpu.sh     # sobe API+Web e abre navegador
+```
 
-### 1. Pipeline de ETL (Extract, Transform, Load)
+Opção B (compose manual):
+```bash
+docker-compose -f docker-compose.cpu.yml build ai_projeto_api ai_web_ui
+docker-compose -f docker-compose.cpu.yml up -d ai_projeto_api ai_web_ui
+```
 
-Responsável por processar a base de conhecimento e criar um índice vetorial para busca. Implementado em `etl_orchestrator.py`.
+### GPU (CUDA)
+Pré-requisitos: driver NVIDIA + NVIDIA Container Toolkit.
 
-- **Extração**: Carrega documentos de diversos formatos (`.pdf`, `.docx`, `.md`, `.txt`, código) da pasta `data/` usando loaders específicos (definidos em `loaders/`).
-- **Transformação**: Os documentos são divididos em pequenos pedaços (chunks) usando `RecursiveCharacterTextSplitter` para otimizar a busca. Metadados como `source_file` são associados a cada chunk.
-- **Carregamento (Load)**:
-    - **Embeddings**: Cada chunk é convertido em um vetor numérico (embedding) usando o modelo `sentence-transformers/all-MiniLM-L6-v2`.
-    - **Vector Store (FAISS)**: Os embeddings são armazenados em um índice FAISS, que permite buscas de similaridade eficientes.
-    - **Persistência de Metadados (PostgreSQL)**: Informações sobre os chunks e os arquivos processados (incluindo hashes para detecção de modificações) são armazenadas em um banco de dados PostgreSQL. Isso permite atualizações incrementais e rastreamento da base de conhecimento.
+Opção A (scripts prontos):
+```bash
+./scripts/treinar_ia_gpu.sh      # roda ETL
+./scripts/inicia_site_gpu.sh     # sobe API+Web (GPU) e abre navegador
+```
 
-### 2. Serviço de API RAG
-
-Uma API Flask (`api.py`) que expõe endpoints para consultas. Ela é responsável por receber as perguntas do usuário, buscar no índice vetorial e orquestrar a geração da resposta.
-
-- **Health Checks e Métricas**: Inclui endpoints `/healthz` para verificar a prontidão da aplicação (FAISS e LLM) e `/metrics` para monitorar o tempo de atividade e o número de consultas.
-- **Processamento de Consultas**: Ao receber uma pergunta, a API utiliza o modelo de embeddings e o vetorstore FAISS para encontrar os chunks de documentos mais relevantes.
-- **Geração de Resposta**: Os chunks recuperados são passados para o função `answer_question` (em `query_handler.py`) que utiliza um LLM (Google Gemini) para gerar uma resposta coerente e citar as fontes.
-
-### 3. Agente de IA (LangGraph)
-
-Um agente inteligente (`agent_workflow.py`) construído com LangGraph que gerencia o fluxo de conversação.
-
-- **Triagem**: O agente primeiro classifica a pergunta do usuário (`node_triagem`) para decidir se pode ser respondida diretamente ou se requer mais informações.
-- **Auto-Resolução (RAG)**: Se a pergunta for clara, o agente tenta resolvê-la usando o pipeline RAG (`node_auto_resolver`). Se houver histórico de conversa, a pergunta é condensada para ser autônoma antes de ser enviada ao RAG.
-- **Pedido de Informações**: Se a pergunta for ambígua ou o RAG não encontrar contexto suficiente, o agente formula uma pergunta de esclarecimento ao usuário (`node_pedir_info`) usando o LLM.
-- **Tomada de Decisão**: A lógica condicional (`decidir_pos_triagem`, `decidir_pos_auto_resolver`) direciona o fluxo do grafo com base nos resultados da triagem e do RAG.
+Opção B (compose manual):
+```bash
+docker-compose -f docker-compose.gpu.yml build ai_projeto_api ai_web_ui
+docker-compose -f docker-compose.gpu.yml up -d ai_projeto_api ai_web_ui
+```
 
 ---
 
-✍️ Autor: Celso Lisboa
-📎 Repositório: github.com/elcelsius/ai_etl_project
+## 🧪 Smoke tests
 
+**Via script**:
+```bash
+./smoke.sh               # CPU (consulta via 5000 e 8080)
+```
 
+**Manual rápido**:
+
+- Healthz:
+```bash
+curl -s http://localhost:5000/healthz | jq .
+curl -s http://localhost:8080/api/healthz | jq .
+```
+
+- Consulta (5000) com debug:
+```bash
+curl -s -H "Content-Type: application/json" \
+  -d '{"question":"onde encontro informação de monitoria de computação?","debug":true}' \
+  http://localhost:5000/query | jq '.context_found, .debug.route, .debug.rerank.enabled, .debug.timing_ms'
+```
+
+- Consulta (8080) via nginx:
+```bash
+curl -s -H "Content-Type: application/json" \
+  -d '{"question":"onde encontro informação de monitoria de computação?","debug":false}' \
+  http://localhost:8080/api/query | jq '.answer, .citations'
+```
+
+- UI: acesse `http://localhost:8080/`  
+  - Botão **Perguntar** habilita somente quando `/api/healthz` retornar `ready:true`.
+
+---
+
+## 🔍 Validação funcional (checklist)
+
+1. **ETL/FAISS**
+   - Índice criado no volume (`/app/vector_store/faiss_index`).
+   - `healthz` retorna `"faiss": true` e `faiss_store_dir` correto.
+2. **Embeddings**
+   - `healthz` mostra `embeddings_model` esperado.
+   - `context_found: true` quando há documentos relevantes em `./data`.
+3. **Reranker (opcional)**
+   - Se ativo, `debug.rerank.enabled: true` e `name` correto.
+   - Scores **sempre float** (0.0 em fallback).
+4. **Telemetria**
+   - `debug.timing_ms.retrieval` e `debug.timing_ms.reranker` (quando aplicável).
+5. **nginx/UI**
+   - `GET /api/healthz` (8080) → 200 com `ready:true`.
+   - `POST /api/query` → 200 e resposta com `answer` + `citations`.
+6. **Logs**
+   - `docker logs -f ai_projeto_api` sem tracebacks.
+   - Se o reranker falhar, WARN + fallback (sem quebrar).
+
+---
+
+## 🧩 Sobre *ontology*, *loaders* e *prompts*
+
+- **Ontology (`config/ontology/terms.yml`)**: mantenha termos e aliases mapeados para normalização/triagem. Um rebuild do ETL **não** é obrigatório ao editar a ontologia, a menos que gere novos metadados que precisem ir ao índice.
+- **Loaders (`loaders/*.py`)**: cada loader extrai **texto** de um tipo de arquivo; o ETL utiliza funções equivalentes internamente (TXT/MD/PDF/DOCX). Se ampliar tipos, adicione novo loader e ajuste o ETL, se necessário.
+- **Prompts (`prompts/*.txt`)**:  
+  - `triagem_prompt.txt` — ajuda a decidir a rota/estratégia de resposta.  
+  - `pedir_info_prompt.txt` — pedido de dados adicionais ao usuário.  
+  - `resposta_final_prompt.txt` — molda a resposta final.  
+  Ajuste com cuidado; mudanças tendem a afetar estilo/estrutura das respostas.
+
+---
+
+## ⚡ GPU: checagens rápidas
+
+Verifique CUDA dentro do container da API:
+```bash
+docker-compose -f docker-compose.gpu.yml exec ai_projeto_api python - <<'PY'
+import torch
+print("torch.cuda.is_available:", torch.cuda.is_available())
+print("num_gpus:", torch.cuda.device_count())
+if torch.cuda.is_available():
+    print("device:", torch.cuda.get_device_name(0))
+PY
+```
+
+Se faltar VRAM ou houver erro, reduza `RERANKER_TOP_K` ou desative o reranker.
+
+---
+
+## 🧰 Troubleshooting
+
+- **`ready=false`/`faiss=false`** → rode o ETL; confirme `FAISS_STORE_DIR` na API.
+- **Timeout via 8080** → confira `web_ui/conf.d/default.conf` (`location /api/` para a API).
+- **Reranker lento/falhando** → `RERANKER_ENABLED=false` ou `TOP_K` menor; o backend já faz fallback seguro.
+- **Comparação de `None`** → já mitigado (scores sempre float). Se aparecer, verifique se você alterou o front para não ordenar por campos inexistentes.
+- **Sem internet p/ baixar modelos** → use cache local (`HF_HOME`/`TRANSFORMERS_CACHE`) ou desative o reranker.
+
+---
+
+## 📄 Licença
+MIT (ou a política da sua organização).
+
+---
+
+## 🙌 Créditos
+- Estrutura e ajustes do projeto: Celso Lisboa
+- Patches de robustez (reranker, readiness, nginx/UI): colaboração assistida

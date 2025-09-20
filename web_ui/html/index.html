@@ -13,6 +13,10 @@
   </style>
 </head>
 <body>
+  <div id="api-status" style="padding:10px; background:#fff3cd; color:#664d03; border:1px solid #ffecb5; border-radius:8px; margin:12px; display:flex; align-items:center; gap:8px;">
+    <span>⏳ Carregando API…</span>
+    <small id="api-status-tip">(aguarde a inicialização dos modelos)</small>
+  </div>
   <h1>RAG Microservice</h1>
   <p>Digite uma pergunta e envie:</p>
   <textarea id="q" placeholder="Ex.: Qual o e-mail do departamento de computação?"></textarea>
@@ -89,6 +93,35 @@
   poll();
 })();
 </script>
+<script>
+(function () {
+  const statusEl = document.getElementById('api-status');
+  const askBtn = document.getElementById('ask');
+  const input = document.getElementById('q');
 
+  function setDisabled(disabled) {
+    if (askBtn) askBtn.disabled = disabled;
+    if (input) input.disabled = disabled;
+    if (disabled && statusEl) statusEl.style.display = 'flex';
+    if (!disabled && statusEl) statusEl.style.display = 'none';
+  }
+
+  async function ping() {
+    try {
+      const r = await fetch('/api/healthz', { cache: 'no-store' });
+      const j = await r.json();
+      const ready = !!j.ready;
+      setDisabled(!ready);
+      if (ready) return; // para o polling
+    } catch (e) {
+      setDisabled(true);
+    }
+    setTimeout(ping, 1000);
+  }
+
+  setDisabled(true);
+  ping();
+})();
+</script>
 </body>
 </html>
