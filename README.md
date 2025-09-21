@@ -1,220 +1,218 @@
-# 🧠 rag-microservice — README FINAL (CPU + GPU) + ETL/RAG explicados
+# RAG Microservice — README (atualizado)
 
-Microserviço de **RAG (Retrieval-Augmented Generation)** com **Flask**, **FAISS**, **sentence-transformers** e UI via **nginx** (8080). Suporta **CPU** e **GPU (CUDA)**. Inclui **reranker** opcional (CrossEncoder).
+Este projeto implementa um microserviço **RAG** (Retrieval-Augmented Generation) com duas rotas de recuperação (lexical e vetorial), **reranker** via CrossEncoder e orquestração opcional por **Agente** (LangGraph). Aqui você encontra **como rodar**, **como depurar**, **como configurar pesos e confiança**, e um **diagrama** do fluxo.
 
----
-
-## 📦 Stack e serviços
-
-- **Python 3.11**
-- **Flask** — API (`/query`, `/healthz`)
-- **LangChain (community + text-splitters)**
-- **FAISS** — índice vetorial persistente em `/app/vector_store/faiss_index`
-- **Embeddings** — `intfloat/multilingual-e5-large`
-- **Reranker (opcional)** — `jinaai/jina-reranker-v2-base-multilingual`
-- **nginx** — UI (8080) + proxy `/api/*` → API (5000)
-- Compose: `ai_etl` (ETL), `ai_projeto_api` (API), `ai_web_ui` (nginx/UI), `ai_postgres` (opcional)
+> Se preferir um documento dedicado de arquitetura, veja **ARCHITECTURE.md** (inclui o mesmo diagrama e explicações detalhadas).
 
 ---
 
-## 🗂 Estrutura do repositório (essencial)
+## Sumário
+- [Arquitetura (resumo + diagrama)](#arquitetura-resumo--diagrama)
+- [Requisitos & Setup](#requisitos--setup)
+- [Configuração (.env)](#configuração-env)
+- [Executando o ETL (build do índice)](#executando-o-etl-build-do-índice)
+- [Subindo a API](#subindo-a-api)
+- [Consultas & Debug](#consultas--debug)
+- [Como funcionam os "pesos" e a confiança](#como-funcionam-os-pesos-e-a-confiança)
+- [Boas práticas & Troubleshooting](#boas-práticas--troubleshooting)
 
+---
+
+## Arquitetura (resumo + diagrama)
+
+**Fluxo alto nível:**
+1. O usuário chama `POST /query` com sua pergunta.
+2. A API (opcionalmente) faz triagem de intenção.
+3. **Rota Lexical** (prioritária): busca por sentenças que batem com termos da pergunta (com **bônus** se a fonte pertencer a um **departamento** citado). Se for suficiente, responde.
+4. **Rota Vetorial** (fallback/forçada): gera **multi-queries** com base em **sinônimos** (terms.yml), consulta **FAISS**, **reranqueia** com **CrossEncoder** e calcula uma **confiança**. Se `confidence >= CONFIDENCE_MIN` e `REQUIRE_CONTEXT=true`, responde.
+5. O **Agente** (LangGraph) pode tentar **AUTO_RESOLVER** chamando o RAG; se não houver contexto, retorna **PEDIR_INFO**.
+
+### Diagrama (Mermaid)
+
+> Visualiza corretamente no GitHub/GitLab/VSCode com extensão Mermaid.
+
+```mermaid
+flowchart LR
+    subgraph Client
+      U[Usuário]
+    end
+    subgraph API
+      A[Flask API<br/>/query]
+      H[Health/Metrics]
+    end
+    subgraph Retrieval
+      VS[(FAISS Index)]
+      EMB[HF Embeddings]
+      MQ[Multi-Query<br/> + Sinônimos]
+      LEX[Busca Lexical<br/>(sentenças + bônus de depto)]
+      RER[CrossEncoder<br/>(Reranker)]
+    end
+    subgraph LLM
+      TRI[LLM Triagem]
+      GEN[LLM Geração de Resposta]
+    end
+    subgraph ETL
+      LD[Loaders<br/>(pdf, docx, md, txt, code, ...)]
+      SPL[Chunking]
+      EMB_E[HF Embeddings]
+      VS_B[FAISS Build/Update]
+      DB[(PostgreSQL<br/>hashes/chunks)]
+    end
+    subgraph Agent
+      TG[Triagem]
+      AR[Auto Resolver<br/>(chama RAG)]
+      PD[Pedir Info]
+    end
+
+    U -->|Pergunta| A
+    A -->|triagem opcional| TRI
+    TRI -->|ação| TG
+    TG -->|AUTO_RESOLVER| AR
+    TG -->|PEDIR_INFO| PD
+
+    AR -->|Rota 1| LEX
+    LEX -->|se encontrou| GEN
+    AR -->|Rota 2| MQ --> VS --> RER --> GEN
+    GEN -->|Resposta + Citações + Confiança| A
+
+    H --- A
+
+    %% ETL
+    LD --> SPL --> EMB_E --> VS_B --> VS
+    VS_B --> DB
+    DB -->|incremental| VS_B
+
+    %% Embeddings em runtime
+    A --- EMB
+    A --- VS
 ```
-rag-microservice/
-├─ config/ontology/terms.yml         # ontologia/dicionário para triagem/normalização
-├─ data/                             # documentos (TXT/MD/PDF/DOCX...), subpastas ok
-├─ loaders/                          # seus loaders: load(file_path)->list[Document]
-│  ├─ code_loader.py                 # TextLoader com fallback de encoding
-│  ├─ docx_loader.py                 # Docx2txtLoader / python-docx
-│  ├─ md_loader.py                   # UnstructuredMarkdownLoader
-│  ├─ pdf_loader.py                  # UnstructuredPDFLoader (mode="single")
-│  └─ txt_loader.py                  # TextLoader
-├─ prompts/
-│  ├─ pedir_info_prompt.txt
-│  ├─ resposta_final_prompt.txt
-│  └─ triagem_prompt.txt
-├─ scripts/
-│  ├─ etl_build_index.py             # ETL (CLI: --data, --out, --exts, --loaders, ...)
-│  ├─ treinar_ia_cpu.sh / treinar_ia_gpu.sh
-│  ├─ inicia_site_cpu.sh / inicia_site_gpu.sh
-│  ├─ smoke_cpu.sh / smoke_gpu.sh
-│  └─ (outros auxiliares)
-├─ web_ui/
-│  ├─ html/index.html                # usa /api/query e /api/healthz
-│  └─ conf.d/default.conf            # nginx mapeia /api/* -> ai_projeto_api:5000
-├─ api.py                            # Flask app (endpoints)
-├─ query_handler.py                  # RAG + reranker + debug/telemetria
-└─ docker-compose.*.yml
-```
+
+> Versão standalone (com mais detalhes): veja **ARCHITECTURE.md**.
 
 ---
 
-## 🔧 Variáveis (API)
+## Requisitos & Setup
 
-- `FAISS_STORE_DIR=/app/vector_store/faiss_index`
-- `EMBEDDINGS_MODEL=intfloat/multilingual-e5-large`
-- `RERANKER_ENABLED=true|false`
-- `RERANKER_NAME=jinaai/jina-reranker-v2-base-multilingual`
-- `RERANKER_TOP_K=5`
-- `RERANKER_MAX_LEN=512`
-- `REQUIRE_LLM_READY=false`
+- Python 3.10+ (recomendado)
+- Docker opcional (há `Dockerfile.cpu` e `docker-compose.cpu.yml`)
+- FAISS (via LangChain/FAISS) + HuggingFace Embeddings
+- Chaves de LLM (Gemini/OpenAI) se for usar geração/triagem
 
----
-
-## ▶️ Executar scripts a partir da raiz
-
-### Linux/macOS
+Instale dependências (exemplo):
 ```bash
-chmod +x scripts/*.sh
-./scripts/treinar_ia_cpu.sh
-./scripts/inicia_site_cpu.sh
-# GPU se aplicável
-./scripts/treinar_ia_gpu.sh
-./scripts/inicia_site_gpu.sh
-# smokes
-./smoke_cpu.sh
-./smoke_gpu.sh
+pip install -r requirements.txt
 ```
-
-### Windows
-- Preferível usar **WSL** (Ubuntu) e os comandos acima.
-- PowerShell (fora do WSL): use `bash`:
-```powershell
-bash scripts/treinar_ia_cpu.sh
-bash scripts/inicia_site_cpu.sh
-bash smoke_cpu.sh
-```
-
-> Se aparecer **permission denied** → `chmod +x scripts/*.sh`  
-> Se aparecer **bad interpreter / ^M** → `dos2unix scripts/*.sh` (CRLF → LF)  
-> Se `docker-compose` não existir → use `docker compose` (v2).
 
 ---
 
-## 🚀 Subir serviços
+## Configuração (.env)
 
-### CPU
+Crie um `.env` baseado em `.env.example`. Principais chaves:
+
+```env
+# Modelos
+EMBEDDINGS_MODEL=intfloat/multilingual-e5-large
+CROSS_ENCODER=jinaai/jina-reranker-v2-base-multilingual
+
+# Limiar de resposta segura
+CONFIDENCE_MIN=0.32
+REQUIRE_CONTEXT=true
+
+# Execução
+ROUTE_FORCE=auto   # auto | vector
+TOP_K=6
+PER_QUERY=4
+
+# Provedores LLM (opcional)
+OPENAI_API_KEY=...
+GEMINI_API_KEY=...
+```
+
+> **Importante:** o **ETL** agora lê `EMBEDDINGS_MODEL` do `.env`, alinhando o índice com a API em runtime.
+
+---
+
+## Executando o ETL (build do índice)
+
+1. Coloque seus arquivos em `./data/` (pdf, docx, md, txt, csv, json, código, etc.).
+2. Rode o build (exemplos):
+   ```bash
+   python etl_build_index.py
+   # ou
+   python etl_orchestrator.py --rebuild
+   ```
+3. Saída padrão do índice: `./vector_store/faiss_index` (pode variar conforme seu script).
+4. Para atualizações incrementais, use os modos de **update** ou **watch** conforme seu orquestrador de ETL.
+
+---
+
+## Subindo a API
+
+Via Python:
 ```bash
-./scripts/treinar_ia_cpu.sh         # roda ETL (gera FAISS a partir de ./data)
-./scripts/inicia_site_cpu.sh        # sobe API+Web
-curl -s http://localhost:8080/api/healthz | jq .
+uvicorn api:app --host 0.0.0.0 --port 5000
 ```
 
-### GPU (CUDA)
+Via Docker Compose:
 ```bash
-./scripts/treinar_ia_gpu.sh
-./scripts/inicia_site_gpu.sh
-curl -s http://localhost:8080/api/healthz | jq .
+docker compose -f docker-compose.cpu.yml up --build
 ```
+
+Endpoints úteis:
+- `POST /query` — consulta RAG
+- `GET /healthz` — health/readiness
+- `GET /metrics` — contadores simples
 
 ---
 
-## 🧪 Smokes (CPU/GPU) com flags
+## Consultas & Debug
 
+Exemplo de chamada com debug:
 ```bash
-# CPU básico
-./smoke_cpu.sh
-
-# CPU com ETL e CSV/JSON (se você tiver loaders read_csv/read_json)
-./smoke_cpu.sh --with-etl --exts "txt,md,pdf,docx,csv,json" --loaders ./loaders \
-  --question "onde encontro informação de monitoria de computação?"
-
-# GPU básico
-./smoke_gpu.sh
-
-# GPU com ETL e as mesmas extensões
-./smoke_gpu.sh --with-etl --exts "txt,md,pdf,docx,csv,json" --loaders ./loaders
+curl -s -H "Content-Type: application/json" \
+  -d '{"question":"onde encontro informação de monitoria de computação?","debug":true}' \
+  http://localhost:5000/query | jq
 ```
 
-Os smokes validam:
-- `ready:true` e `faiss:true` no `/api/healthz`
-- resposta via 5000 e 8080
-- (se reranker ativo) **scores numéricos** (sem `null`).
+Campos úteis no `debug`:
+- `route`: `"lexical"` ou `"vector"`
+- `mq_variants`: queries geradas com base em sinônimos (terms.yml)
+- `faiss.candidates[*].score`: similaridade vinda do FAISS (quando disponível)
+- `rerank.enabled`: se o CrossEncoder carregou
+- `rerank.scored[*].score`: score **0–1** do CrossEncoder (comanda a ordenação final)
+- `confidence`: máximo dos scores do reranker (após normalização, se aplicável)
 
 ---
 
-## 🧩 Como funciona o **ETL** neste projeto
+## Como funcionam os "pesos" e a confiança
 
-O ETL é responsável por **preparar a base vetorial** usada nas buscas do RAG.
+### Rota Lexical
+- Extraímos **termos candidatos** (palavras alfanuméricas ≥3, e-mails; stopwords são ignoradas).
+- Procuramos **sentenças** que batem forte (fuzzy/regex). Cada acerto contribui para o score do doc.
+- Se a **fonte** do documento condiz com um **departamento** citado na pergunta (via `terms.yml`), aplicamos um **bônus** (ex.: `+8`) ao melhor score daquele doc.
+- Havendo hits suficientes, a resposta sai **sem** reranker (os scores exibidos podem ser `0.0` por design).
 
-### Passo a passo
-1. **Leitura de arquivos** (recursiva) em `./data` filtrando por extensões suportadas (`--exts`).  
-2. **Loaders** (prioridade dupla):
-   - **Estilo “read_\<ext\>”**: se existir uma função `read_<ext>(path)` em `loaders/`, ela é usada, retornando **texto** (`str`). Ex.: `read_csv`, `read_json`.
-   - **Estilo “load(file_path)”**: se existir uma função `load(file_path) -> list[Document]` (seus loaders), o ETL **concatena** os `page_content` dos `Document` e segue.  
-   - Se nenhum desses estiver disponível, usa **leitores nativos** de texto (txt/md/pdf/docx) como fallback.
-3. **Chunking** com `RecursiveCharacterTextSplitter` (parâmetros `--chunk-size` e `--chunk-overlap`).  
-4. **Embeddings**: cada chunk vira um vetor usando `intfloat/multilingual-e5-large` (padrão).  
-5. **FAISS**: os vetores + metadados (`source`, `chunk`) são gravados em `/app/vector_store/faiss_index` (ou caminho passado com `--out`).
+### Rota Vetorial (FAISS + Reranker)
+- Geramos **multi-queries** com **sinônimos/aliases** do `terms.yml` para ampliar cobertura.
+- Recuperamos candidatos no **FAISS** e registramos seus `score`s (quando disponíveis).
+- Aplicamos **CrossEncoder** (0–1) para ordenar por relevância contextual.
+- **Confiança (`confidence`)** = **máximo** dos scores do reranker. Se `confidence >= CONFIDENCE_MIN` **e** `REQUIRE_CONTEXT=true`, respondemos como “contexto suficiente”.
 
-### Diagrama (alto nível)
-```
-./data  ──► (loaders) read_<ext> | load(file) | fallback ──► texto único
-                                         │
-                                  split em chunks
-                                         │
-                               embeddings (e5-large)
-                                         │
-                          FAISS (persistido em volume docker)
-```
-
-> Resultado: a API consegue fazer busca vetorial **rápida** sem depender do tempo de parsing/embedding a cada pergunta.
+> Ajuste `CONFIDENCE_MIN` para respostas mais **conservadoras** (maior) ou mais **falantes** (menor).
 
 ---
 
-## 🔎 Como funciona o **RAG** (pipeline de consulta)
+## Boas práticas & Troubleshooting
 
-Quando você chama `POST /query` (via 5000) ou `POST /api/query` (via 8080):
-
-1. **Triagem / Roteamento** (conforme seus prompts e regras internas):  
-   Decide a rota (ex.: lexical vs. vetorial). No seu caso, a rota **lexical** vem aparecendo no debug; a rota vetorial usa FAISS.
-2. **Busca (FAISS)**:  
-   - A pergunta é embeddada com o mesmo modelo (`e5-large`).  
-   - O FAISS retorna os **k** chunks mais próximos (candidatos).  
-   - O tempo é registrado em `debug.timing_ms.retrieval` (quando `debug=true`).
-3. **Reranker (opcional)**:  
-   - Se `RERANKER_ENABLED=true`, o CrossEncoder pontua os pares `(pergunta, chunk)` e reordena.  
-   - Se o modelo não estiver disponível ou falhar, o backend cai em **fallback** (scores `0.0`, `enabled=false`).  
-   - O tempo é registrado em `debug.timing_ms.reranker`.
-4. **Síntese/Resposta**:  
-   - O sistema sintetiza um **resumo** usando os melhores trechos (com ou sem reranker).  
-   - As **fontes** saem em `citations` (cada item com `source`, `chunk`, `preview`).  
-   - `context_found` indica se havia contexto útil.
-5. **Segurança de debug**:  
-   - `debug.rerank.scored[*].score` é **sempre float** (0.0 no fallback), nunca `null` — evita erros no front.
-
-### Diagrama
-```
-pergunta ─► (triagem) ─► (FAISS top-k) ─► (reranker?) ─► resposta + citações
-                        │                │
-                        └── timing_ms.retrieval   timing_ms.reranker
-```
+- **Alinhar Embeddings**: garanta que ETL **e** API usem o **mesmo** `EMBEDDINGS_MODEL`.
+- **Tamanho dos chunks**: ajuste para equilibrar recall e precisão (muitos micro-chunks podem “diluir” contexto; chunks enormes podem prejudicar rerank).
+- **Sinônimos atualizados**: mantenha `terms.yml` com aliases relevantes; limpe termos ambíguos.
+- **Observabilidade**: verifique `healthz`, counters/metrics e use `debug=true` em chamadas de teste.
+- **Rota forçada**: `ROUTE_FORCE=vector` ajuda a depurar FAISS/reranker sem interferência lexical.
+- **Cache** (opcional): cacheie embeddings/consultas frequentes para ganho de latência.
+- **Qualidade dos dados**: remova duplicatas e normalize fontes; metadados ajudam no rerank.
 
 ---
 
-## ✅ Checklist rápido de validação
-
-- `curl -s http://localhost:8080/api/healthz | jq .` → `ready:true`, `faiss:true`  
-- `POST /api/query` retorna `answer` + `citations`  
-- (se ativo) `debug.rerank.enabled:true` e `score` **numérico**  
-- Logs limpos (`docker logs -f ai_projeto_api`)
-
----
-
-## 🧰 Troubleshooting
-- **`ready:false`/`faiss:false`** → rode ETL e verifique `FAISS_STORE_DIR` no container da API.  
-- **Reranker lento** → `RERANKER_ENABLED=false` ou reduza `RERANKER_TOP_K`.  
-- **Timeout via 8080** → confira `web_ui/conf.d/default.conf` (`location /api/`).  
-- **CRLF em scripts** → `dos2unix scripts/*.sh`.  
-- **Sem internet para modelos** → use cache local (`HF_HOME`/`TRANSFORMERS_CACHE`) ou desative o reranker.
-
----
-
-## 📄 Licença
-MIT (ou a da sua organização).
-
----
-
-## 🙌 Créditos
-- Projeto e organização: Celso Lisboa  
-- Patches de robustez (scores, timing, readiness) + documentação: colaboração assistida
+## Licença
+MIT (ou a de sua preferência).

@@ -31,8 +31,10 @@ DB_USER = os.getenv("POSTGRES_USER")
 DB_PASSWORD = os.getenv("POSTGRES_PASSWORD")
 DB_PORT = os.getenv("POSTGRES_PORT", "5432")
 
-# Nome do modelo de embeddings a ser utilizado
-MODEL_NAME = "all-MiniLM-L6-v2"
+# --- CORREÇÃO: Nome do modelo de embeddings alinhado com a API ---
+# Usa a variável de ambiente EMBEDDINGS_MODEL para consistência,
+# com um valor padrão igual ao recomendado na API e no README.
+MODEL_NAME = os.getenv("EMBEDDINGS_MODEL", "intfloat/multilingual-e5-large")
 
 # Mapeamento de extensões de arquivo para seus respectivos loaders
 LOADER_MAPPING = {
@@ -300,5 +302,3 @@ if __name__ == "__main__":
         run_full_rebuild()
 
     print("\n--- PROCESSO DE ETL CONCLUÍDO ---")
-
-

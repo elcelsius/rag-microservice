@@ -983,6 +983,7 @@ def answer_question(question: str, embeddings_model: HuggingFaceEmbeddings, vect
     dbg["rerank"]["enabled"] = bool(reranker is not None)
     dbg["rerank"]["name"] = RERANKER_NAME if (reranker is not None) else None
     dbg["rerank"]["top_k"] = RERANKER_TOP_K if (reranker is not None) else None
+
     # orçamento depende do reranker real, não só do ENV
     k_candidates_total = RERANKER_CANDIDATES if reranker is not None else 10
     per_q = max(3, math.ceil(k_candidates_total / max(1, len(queries))))
@@ -991,8 +992,14 @@ def answer_question(question: str, embeddings_model: HuggingFaceEmbeddings, vect
     cands = []
     for query_variant in queries:
         try:
-            hits = vectorstore.similarity_search(query_variant, k=per_q)
-            cands.extend(hits)
+            # use a API com score
+            hits = vectorstore.similarity_search_with_score(query_variant, k=per_q)
+            for doc, s in hits:
+                try:
+                    doc.score = float(s)  # anexe o score no próprio Document (para o debug ler)
+                except Exception:
+                    doc.score = 0.0
+                cands.append(doc)
         except Exception as e:
             print(f"[ERROR] Falha na busca vetorial para a query '{query_variant}': {e}")
             continue
@@ -1070,18 +1077,16 @@ def answer_question(question: str, embeddings_model: HuggingFaceEmbeddings, vect
 
         # Reordenar os Document originais pela mesma ordem (usando o índice "idx" dos normalizados)
         order = [d.get("idx") for d in docs_norm_sorted if d.get("idx") is not None]
-        # Garante corte em top_k e evita Nones
         order = [int(i) for i in order if isinstance(i, int)][: min(RERANKER_TOP_K, len(order))]
 
         docs = [cands[i] for i in order]
-        scores = [scores_sorted[i] for i in range(len(order))]  # já estão floats e ordenados
+        scores = [scores_sorted[i] for i in range(len(order))]  # floats 0..1
 
         if debug:
             dbg.setdefault("rerank", {})
             dbg["rerank"]["enabled"] = True
             dbg["rerank"]["name"] = RERANKER_NAME
             dbg["rerank"]["top_k"] = RERANKER_TOP_K
-            # Mostra os top_k (já ordenados) com scores float
             dbg["rerank"]["scored"] = [
                 {
                     "source": (getattr(d, "metadata", {}) or {}).get("source"),
