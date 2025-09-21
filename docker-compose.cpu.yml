@@ -28,26 +28,25 @@ services:
       context: .
       dockerfile: Dockerfile.cpu
     container_name: ai_etl
+    env_file:
+      - .env
     environment:
-      # Configurações para o processo de ETL.
       DATABASE_URL: "postgresql://postgres:postgres@ai_postgres:5432/ragdb"
-      DATA_DIR: "/app/data" # Diretório de onde os dados brutos são lidos.
-      FAISS_OUT_DIR: "/app/vector_store/faiss_index" # Onde o índice vetorial será salvo.
-      EMBEDDINGS_MODEL: "${EMBEDDINGS_MODEL:-intfloat/multilingual-e5-large}"
+      DATA_DIR: "/app/data"
+      FAISS_OUT_DIR: "/app/vector_store/faiss_index"
+      # EMBEDDINGS_MODEL vem do .env; se quiser default aqui, ok:
+      # EMBEDDINGS_MODEL: "${EMBEDDINGS_MODEL:-intfloat/multilingual-e5-large}"
     depends_on:
-      # Garante que o ETL só comece após o banco de dados estar saudável.
       ai_postgres:
         condition: service_healthy
     volumes:
-      # Mapeia diretórios locais para dentro do container.
-      - ./data:/app/data:ro # Dados de entrada (somente leitura).
-      - vector_store:/app/vector_store # Volume para persistir o índice vetorial.
-      - ./config:/app/config:ro # Arquivos de configuração.
+      - ./data:/app/data:ro
+      - vector_store:/app/vector_store
+      - ./config:/app/config:ro
     working_dir: /app
-    # Comando executado ao iniciar o container.
     command: ["bash", "-lc", "python3 -u scripts/etl_build_index.py && echo 'ETL done'"]
-    # Este serviço não reinicia, ele executa a tarefa e termina.
     restart: "no"
+
 
   # Serviço da API principal
   ai_projeto_api:
@@ -55,37 +54,32 @@ services:
       context: .
       dockerfile: Dockerfile.cpu
     container_name: ai_projeto_api
+    env_file:
+      - .env
     environment:
-      # Configurações da API e dos modelos.
-      FAISS_STORE_DIR: "/app/vector_store/faiss_index" # Local onde a API carrega o índice.
-      EMBEDDINGS_MODEL: "${EMBEDDINGS_MODEL:-intfloat/multilingual-e5-large}"
-      GOOGLE_API_KEY: "${GOOGLE_API_KEY:-}" # Chave da API do Google Gemini.
-      GOOGLE_MODEL:   "${GOOGLE_MODEL:-gemini-1.5-flash-latest}"
-      # ... outras configurações para Reranker, Multi-Query, etc.
-      RERANKER_ENABLED: "${RERANKER_ENABLED:-true}"
-      RERANKER_NAME: "${RERANKER_NAME:-jinaai/jina-reranker-v2-base-multilingual}"
-      STRUCTURED_ANSWER: "${STRUCTURED_ANSWER:-true}"
-      MAX_SOURCES: "${MAX_SOURCES:-5}"
-      DEBUG_LOG: "${DEBUG_LOG:-true}"         # logar no stdout
-      DEBUG_PAYLOAD: "${DEBUG_PAYLOAD:-true}" # incluir "debug" na resposta quando ?debug=true
+      # Só o que é específico do container (ou defaults que não conflitam):
+      FAISS_STORE_DIR: "/app/vector_store/faiss_index"
+      HF_ALLOW_CODE_EVAL: "1"
+      TRANSFORMERS_NO_ADVISORY_WARNINGS: "1"
+      TRANSFORMERS_TRUST_REMOTE_CODE: "1"
+      # Se quiser forçar rota SOMENTE vetorial para diagnóstico, descomente:
+      # ROUTE_FORCE: "vector"
     depends_on:
-      # A API só inicia após o ETL ter sido concluído com sucesso.
       ai_etl:
         condition: service_completed_successfully
     volumes:
-      - vector_store:/app/vector_store # Acessa o mesmo volume do índice vetorial.
-      - ./prompts:/app/prompts:ro # Mapeia os templates de prompt.
+      - vector_store:/app/vector_store
+      - ./prompts:/app/prompts:ro
       - ./data:/app/data:ro
       - ./config:/app/config:ro
     ports:
-      # Expõe a API na porta 5000 do host.
       - "5000:5000"
     healthcheck:
-      # Verifica se a API está online e pronta para receber requisições.
       test: ["CMD", "python3", "-c", "import json,urllib.request,sys; d=json.loads(urllib.request.urlopen('http://localhost:5000/healthz').read().decode()); sys.exit(0 if (d.get('ready') is True) else 1)"]
       interval: 10s
       timeout: 5s
       retries: 20
+
 
   # Serviço da Interface Web (UI)
   ai_web_ui:

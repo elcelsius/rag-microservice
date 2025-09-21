@@ -21,18 +21,46 @@ try:
     from sentence_transformers import CrossEncoder  # reranker
 except Exception:  # se não tiver sentence_transformers, segue sem rerank
     CrossEncoder = None  # type: ignore
+    # Fallback: usar Transformers direto se CrossEncoder pedir prompt interativo
+    try:
+        import torch
+        from transformers import AutoTokenizer, AutoModelForSequenceClassification
+    except Exception:
+        torch = None
+        AutoTokenizer = None
+        AutoModelForSequenceClassification = None
+
 
 # ==== Configurações do Reranker ====
+def _env_bool(name: str, default: bool = False) -> bool:
+    val = os.getenv(name)
+    if val is None:
+        return default
+    return str(val).strip().lower() in {"1", "true", "yes", "on"}
+
+def _env_int(name: str, default: int, min_val: int | None = None, max_val: int | None = None) -> int:
+    raw = os.getenv(name, str(default))
+    try:
+        v = int(str(raw).strip())
+    except Exception:
+        v = default
+    if min_val is not None and v < min_val:
+        v = min_val
+    if max_val is not None and v > max_val:
+        v = max_val
+    return v
 # Ativa ou desativa o uso do reranker para reordenar os resultados da busca.
-RERANKER_ENABLED = os.environ.get("RERANKER_ENABLED", "true").lower() == "true"
+RERANKER_ENABLED = _env_bool("RERANKER_ENABLED", False)
 # Nome do modelo CrossEncoder a ser usado para o rerank.
-RERANKER_NAME = os.environ.get("RERANKER_NAME", "jinaai/jina-reranker-v2-base-multilingual")
+RERANKER_NAME = os.getenv("RERANKER_NAME", "jinaai/jina-reranker-v2-base-multilingual")
 # Número de documentos candidatos a serem enviados para o reranker.
-RERANKER_CANDIDATES = int(os.getenv("RERANKER_CANDIDATES", "30"))
+RERANKER_CANDIDATES = _env_int("RERANKER_CANDIDATES", 30, 1, 100)
 # Número de documentos a serem retornados pelo reranker (top K).
-RERANKER_TOP_K = int(os.environ.get("RERANKER_TOP_K", "5"))
-# Comprimento máximo da sequência para o modelo reranker.
-RERANKER_MAX_LEN = int(os.environ.get("RERANKER_MAX_LEN", "512"))
+RERANKER_TOP_K = _env_int("RERANKER_TOP_K", 5, 1, 20)
+# Comprimento máximo da sequência para o modelo reranker (clamp para evitar fallback silencioso).
+RERANKER_MAX_LEN = _env_int("RERANKER_MAX_LEN", 512, 128, 1024)
+# (novo) Forçar rota via ENV para diagnóstico: "", "lexical" ou "vector"
+ROUTE_FORCE = os.getenv("ROUTE_FORCE", "").strip().lower()
 
 # ==== Configurações de Multi-Query e Confiança ====
 # Ativa ou desativa a geração de múltiplas variações da pergunta do usuário para busca.
@@ -179,23 +207,93 @@ def _safe_score(x):
         return float("-inf")
 
 def _get_reranker():
-    """Carrega CrossEncoder sob demanda. Nunca levanta exceção para cima."""
+    """Carrega um reranker sob demanda.
+    1) Tenta CrossEncoder (sentence-transformers).
+    2) Se falhar (prompt interativo / trust_remote_code), usa fallback via transformers (HF) com trust_remote_code=True.
+    Nunca levanta exceção para cima.
+    """
     global _reranker_model
-    if not RERANKER_ENABLED or CrossEncoder is None:
+    if not RERANKER_ENABLED:
         return None
-    if _reranker_model is None:
+
+    if _reranker_model is not None:
+        return _reranker_model
+
+    device = os.getenv("RERANKER_DEVICE", "cpu")
+    print(f"[INFO] RERANK: enabled=1 name={RERANKER_NAME} max_len={RERANKER_MAX_LEN} device={device}", flush=True)
+
+    # 1) Caminho direto: CrossEncoder (quando funciona, é o mais simples)
+    if CrossEncoder is not None:
         try:
-            print(f"[INFO] Carregando o modelo reranker: {RERANKER_NAME}")
             _reranker_model = CrossEncoder(
                 RERANKER_NAME,
                 max_length=RERANKER_MAX_LEN,
+                device=device,
                 automodel_args={"trust_remote_code": True},
                 tokenizer_args={"trust_remote_code": True},
             )
+            print("[INFO] RERANK: CrossEncoder carregado com sucesso.", flush=True)
+            return _reranker_model
         except Exception as e:
-            print(f"[WARN] Falha ao carregar reranker '{RERANKER_NAME}': {e}. Prosseguindo sem rerank.")
-            _reranker_model = None
-    return _reranker_model
+            print(f"[WARN] RERANK: CrossEncoder falhou: {e} — tentando fallback HF.", flush=True)
+
+    # 2) Fallback HF: importar dentro da função para evitar NameError de escopo
+    try:
+        import torch  # type: ignore
+        from transformers import AutoTokenizer, AutoModelForSequenceClassification  # type: ignore
+    except Exception as e_imp:
+        print(f"[WARN] RERANK: Transformers/torch indisponíveis ({e_imp}) — desabilitando rerank.", flush=True)
+        _reranker_model = None
+        return None
+
+    try:
+        tok = AutoTokenizer.from_pretrained(RERANKER_NAME, trust_remote_code=True)
+        mdl = AutoModelForSequenceClassification.from_pretrained(RERANKER_NAME, trust_remote_code=True)
+        mdl.to(device)
+        mdl.eval()
+
+        class _HFCE:
+            def __init__(self, tokenizer, model, max_length, device):
+                self.tok = tokenizer
+                self.model = model
+                self.max_length = int(max_length)
+                self.device = device
+
+            def predict(self, pairs):
+                # pairs: List[Tuple[str,str]]
+                if not pairs:
+                    return []
+                a = [p[0] or "" for p in pairs]
+                b = [p[1] or "" for p in pairs]
+                enc = self.tok(
+                    a, b,
+                    padding=True,
+                    truncation=True,
+                    max_length=self.max_length,
+                    return_tensors="pt"
+                )
+                # mover tensores para device
+                for k in enc:
+                    enc[k] = enc[k].to(self.device)
+                with torch.no_grad():
+                    out = self.model(**enc).logits
+                    # 1 logit => sigmoid; 2 logits => prob classe 1
+                    if out.shape[-1] == 1:
+                        scores = torch.sigmoid(out).squeeze(-1)
+                    else:
+                        probs = torch.softmax(out, dim=-1)
+                        scores = probs[..., 1]
+                    return [float(x) for x in scores.detach().cpu().tolist()]
+
+        _reranker_model = _HFCE(tok, mdl, RERANKER_MAX_LEN, device)
+        print("[INFO] RERANK: fallback HF carregado com sucesso.", flush=True)
+        return _reranker_model
+
+    except Exception as e_hf:
+        print(f"[WARN] RERANK: Fallback HF falhou: {repr(e_hf)} — desabilitando rerank.", flush=True)
+        _reranker_model = None
+        return None
+
 
 def _apply_rerank(cands, top_k=5, user_query: str | None = None, dbg: dict | None = None):
     """
@@ -716,13 +814,14 @@ def answer_question(question: str, embeddings_model: HuggingFaceEmbeddings, vect
         "timing_ms": {},
         "mq_variants": [],
         "faiss": {"k": None, "candidates": []},
-        "rerank": {"enabled": True, "name": RERANKER_NAME, "top_k": RERANKER_TOP_K, "scored": []},
+        "rerank": {
+            "enabled": bool(RERANKER_ENABLED),
+            "name": RERANKER_NAME if RERANKER_ENABLED else None,
+            "top_k": RERANKER_TOP_K if RERANKER_ENABLED else None,
+            "scored": []
+        },
         "chosen": {"confidence": None},
     }
-
-    # Estratégia 1: Busca Lexical por Nomes (rápida e precisa para contatos)
-    if debug:
-        dbg["route"] = "lexical"
 
     try:
         all_docs: List[Document] = list(getattr(vectorstore.docstore, "_dict", {}).values())
@@ -744,7 +843,9 @@ def answer_question(question: str, embeddings_model: HuggingFaceEmbeddings, vect
         lex_hits.sort(key=lambda x: x[2], reverse=True)
         lex_hits = lex_hits[:6]
 
-    if lex_hits:
+    if (ROUTE_FORCE != "vector") and lex_hits:
+        if debug:
+            dbg["route"] = "lexical"
         # Se a busca lexical encontrou candidatos fortes, processa-os.
         sentence_snippets: List[str] = []
 
@@ -876,9 +977,15 @@ def answer_question(question: str, embeddings_model: HuggingFaceEmbeddings, vect
     _log_debug(f"MQ variants: {queries}")
 
     # 2. Distribui o "orçamento" de busca entre as queries geradas.
-    k_candidates_total = RERANKER_CANDIDATES if RERANKER_ENABLED else 10
+    # === ANTES de calcular o orçamento, descubra se o reranker de fato está pronto
+    reranker = _get_reranker()  # carrega/usa cache; se não houver, volta None
+    dbg.setdefault("rerank", {})
+    dbg["rerank"]["enabled"] = bool(reranker is not None)
+    dbg["rerank"]["name"] = RERANKER_NAME if (reranker is not None) else None
+    dbg["rerank"]["top_k"] = RERANKER_TOP_K if (reranker is not None) else None
+    # orçamento depende do reranker real, não só do ENV
+    k_candidates_total = RERANKER_CANDIDATES if reranker is not None else 10
     per_q = max(3, math.ceil(k_candidates_total / max(1, len(queries))))
-    t_retrieval0 = time.perf_counter()
 
     # 3. Busca para cada query e mescla os resultados.
     cands = []
@@ -1012,12 +1119,30 @@ def answer_question(question: str, embeddings_model: HuggingFaceEmbeddings, vect
     if (not docs) or (conf < CONFIDENCE_MIN):
         if REQUIRE_CONTEXT:
             # Retorna uma resposta segura se a confiança for muito baixa.
-            return {
+            result = {
                 "answer": "Não encontrei informação suficiente nos documentos para responder com segurança.",
                 "citations": [],
                 "context_found": False,
                 "confidence": conf,
             }
+            # ANEXA DEBUG TAMBÉM NESTE EARLY-RETURN
+            if debug:
+                dbg["timing_ms"]["total"] = _elapsed_ms(t0)
+                # se chegamos aqui sem rota definida, defina como "vector" (estamos no fallback vetorial)
+                dbg["route"] = dbg.get("route") or "vector"
+                # snapshot mínimo dos candidatos finais (se houver)
+                dbg.setdefault("faiss", {})
+                dbg["faiss"]["k"] = len(docs) if docs else 0
+                if docs:
+                    dbg["faiss"]["candidates"] = [_pack_doc(d, getattr(d, "score", None)) for d in docs[:5]]
+                # se rerank não rodou, deixe explícito
+                dbg.setdefault("rerank", {})
+                dbg["rerank"].setdefault("enabled", False)
+                dbg["rerank"].setdefault("name", None)
+                dbg["rerank"].setdefault("scored", [])
+                if DEBUG_PAYLOAD:
+                    result["debug"] = dbg
+            return result
 
     # 6. Se a confiança for aceitável, processa os documentos para a resposta final.
     top_texts = [d.page_content for d in docs]
@@ -1034,9 +1159,9 @@ def answer_question(question: str, embeddings_model: HuggingFaceEmbeddings, vect
 
     # Gera a resposta final com o LLM, mas sem metadados de nome/depto, pois esta é uma busca genérica.
     t_llm = _now()
-    # DEBUG: rota lexical
+    # DEBUG: rota vetorial
     if debug:
-        dbg.setdefault("route", "lexical")
+        dbg["route"] = "vector"
 
     final_text = _llm_resposta_final(q, context_snippets, None, None, {"emails": [], "phones": []})
     dbg["timing_ms"]["llm"] = _elapsed_ms(t_llm)

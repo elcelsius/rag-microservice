@@ -69,7 +69,11 @@ services:
       GOOGLE_API_KEY: "${GOOGLE_API_KEY:-}"
       GOOGLE_MODEL:   "${GOOGLE_MODEL:-gemini-2.5-flash-lite}"
       REQUIRE_LLM_READY: "${REQUIRE_LLM_READY:-false}"
+      RERANKER_ENABLED: "${RERANKER_ENABLED:-true}"
+      RERANKER_NAME: "${RERANKER_NAME:-jinaai/jina-reranker-v2-base-multilingual}"
+      RERANKER_TOP_K: "${RERANKER_TOP_K:-5}"
       STRUCTURED_ANSWER: "${STRUCTURED_ANSWER:-true}"
+      RERANKER_MAX_LEN: "${RERANKER_MAX_LEN:-512}"
       MAX_SOURCES: "${MAX_SOURCES:-5}"
       DEBUG_LOG: "${DEBUG_LOG:-true}"         # logar no stdout
       DEBUG_PAYLOAD: "${DEBUG_PAYLOAD:-true}" # incluir "debug" na resposta quando ?debug=true

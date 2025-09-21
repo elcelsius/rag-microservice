@@ -60,3 +60,5 @@ nltk==3.9.1
 # --- LLM (Google Gemini) ---
 # SDK oficial do Google para interagir com a API do Gemini.
 google-generativeai>=0.7.2,<0.8
+
+einops>=0.7
