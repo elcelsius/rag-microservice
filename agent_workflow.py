@@ -12,12 +12,11 @@ from langgraph.graph import StateGraph, START, END
 
 # --- CORREÇÃO: Importa a função correta do handler e os modelos pré-carregados ---
 from query_handler import answer_question
-
 # Tenta reutilizar o modelo de embeddings e o vectorstore já carregados pela API para otimização.
 # Isso evita a sobrecarga de recarregar esses componentes pesados a cada chamada.
 try:
     from api import embeddings_model, vectorstore
-except (ImportError, ModuleNotFoundError):
+except Exception:
     # Define como None se não puderem ser importados (ex: ao rodar testes fora do contexto da API).
     # O nó 'node_auto_resolver' tratará esse caso de forma segura.
     embeddings_model = None
@@ -155,12 +154,7 @@ def node_auto_resolver(state: AgentState) -> AgentState:
         standalone_question = state["pergunta"]
 
     # --- CORREÇÃO: Chama a função RAG pública correta com os parâmetros necessários ---
-    resultado_rag = answer_question(
-        query=standalone_question,
-        embeddings_model=embeddings_model,
-        vectorstore=vectorstore,
-        debug=False
-    )
+    resultado_rag = answer_question(standalone_question, embeddings_model, vectorstore, debug=False)
 
     # --- CORREÇÃO: Mapeia a saída do RAG de forma mais segura para o estado ---
     rag_success = bool(resultado_rag.get("context_found"))

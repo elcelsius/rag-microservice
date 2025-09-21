@@ -5,17 +5,20 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
-import re, unicodedata
+import re
+import unicodedata
 import os
 import math
 import time  # Importado para telemetria
-from typing import Any, Dict, List, Tuple, Optional, Iterable, Set
+import yaml  # requer PyYAML
 
+from typing import Any, Dict, List, Tuple, Optional, Iterable, Set
 from rapidfuzz import fuzz, distance
 from langchain_community.vectorstores import FAISS
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain.schema import Document
 from llm_client import load_prompt, call_llm
+from telemetry import log_event
 
 try:
     from sentence_transformers import CrossEncoder  # reranker
@@ -61,6 +64,12 @@ RERANKER_TOP_K = _env_int("RERANKER_TOP_K", 5, 1, 20)
 RERANKER_MAX_LEN = _env_int("RERANKER_MAX_LEN", 512, 128, 1024)
 # (novo) Forçar rota via ENV para diagnóstico: "", "lexical" ou "vector"
 ROUTE_FORCE = os.getenv("ROUTE_FORCE", "").strip().lower()
+
+# === Novas configs (híbrido, limiares e cap por fonte) ===
+HYBRID_ENABLED   = (_env_bool("HYBRID_ENABLED", True))    # ativa merge lexical+vetorial antes do reranker
+LEXICAL_THRESHOLD= _env_int("LEXICAL_THRESHOLD", 86, 50, 100)  # antes estava fixo (=86) em _sentence_hits_by_name
+DEPT_BONUS       = _env_int("DEPT_BONUS", 8, 0, 100)      # antes estava fixo (=8) no cálculo de score por depto
+MAX_PER_SOURCE   = _env_int("MAX_PER_SOURCE", 2, 1, 10)   # limita diversidade por 'source' no merge híbrido
 
 # ==== Configurações de Multi-Query e Confiança ====
 # Ativa ou desativa a geração de múltiplas variações da pergunta do usuário para busca.
@@ -164,10 +173,7 @@ def _log_debug(msg: str):
 
 
 # === Dicionário externo (departamentos, aliases, sinônimos, boosts) ===
-import yaml  # requer PyYAML
-
 TERMS_PATH = os.getenv("TERMS_YAML", "/app/config/ontology/terms.yml")
-
 
 def load_terms(path: str = TERMS_PATH):
     """
@@ -617,13 +623,13 @@ def _sentence_hits_by_name(text: str, terms: List[str]) -> List[Tuple[str, int]]
             for tk in tokens_norm:
                 if _is_name_like(tk) and _name_token_match(tk, tn):
                     sc = int(100 * distance.Levenshtein.normalized_similarity(tk, tn))
-                    best = max(best, sc);
+                    best = max(best, sc)
                     hit = True
         if not hit:
             for tn in all_norms:
                 sc = fuzz.partial_ratio(tn, s_norm)
                 best = max(best, sc)
-        if best >= 86:
+        if best >= LEXICAL_THRESHOLD:
             out.append((s_clean, best))
 
     out.sort(key=lambda x: x[1], reverse=True)
@@ -631,7 +637,7 @@ def _sentence_hits_by_name(text: str, terms: List[str]) -> List[Tuple[str, int]]
     for s, sc in out:
         k = s.lower()
         if k not in seen:
-            uniq.append((s, sc));
+            uniq.append((s, sc))
             seen.add(k)
     return uniq[:3]
 
@@ -665,13 +671,14 @@ def _extract_name(snippets: List[str], term: str) -> Optional[str]:
     tnorm = _strip_accents_lower(term or "")
     for s in snippets:
         cands = NAME_SEQ_RE.findall(s or "")
-        if not cands: continue
+        if not cands:
+            continue
         best, best_sim = None, 0.0
         for cand in cands:
             for tk in _tokenize_letters(cand):
                 sim = distance.Levenshtein.normalized_similarity(_strip_accents_lower(tk), tnorm)
                 if sim > best_sim:
-                    best_sim = sim;
+                    best_sim = sim
                     best = cand
         if best and best_sim >= 0.82:
             return best
@@ -696,12 +703,13 @@ def _top_sentences(question: str, texts: List[str], top_n: int = 3) -> List[Tupl
     for t in texts:
         for s in _SENT_SPLIT.split(t or ""):
             s = _norm_ws(s)
-            if s: sentences.append(s)
+            if s:
+                sentences.append(s)
     seen, uniq = set(), []
     for s in sentences:
         k = s.lower()
         if k not in seen:
-            uniq.append(s);
+            uniq.append(s)
             seen.add(k)
     q = _norm_ws(question)
     scored = [(s, fuzz.token_set_ratio(q, s) / 100.0) for s in uniq]
@@ -714,13 +722,14 @@ def _context_window_around_name(doc_text: str, person_name: str, chars_before: i
     """Extrai uma janela de contexto de texto ao redor de um nome de pessoa."""
     if not (doc_text and person_name):
         return None
-    txt = doc_text;
+    txt = doc_text
     name = person_name.strip()
     idx = txt.find(name)
     if idx < 0:
         compact_name = _norm_ws(name)
         idx = _norm_ws(txt).find(compact_name)
-        if idx < 0: return None
+        if idx < 0:
+            return None
     start = max(0, idx - chars_before)
     end = min(len(txt), idx + len(name) + chars_after)
     return _norm_ws(txt[start:end])
@@ -734,10 +743,10 @@ _RESPOSTA_PROMPT = load_prompt("prompts/resposta_final_prompt.txt")
 
 
 def _llm_triage(question: str, signals: Dict[str, Any]) -> Dict[str, Any]:
-    """Usa o LLM para fazer a triagem da pergunta, decidindo se deve responder ou pedir mais informações."""
     if not _TRIAGE_PROMPT:
         return {"action": "AUTO_RESOLVER", "ask": ""}
-    user_payload = f"Pergunta: {question}\n\nSinais:\n{signals}"
+    qn = _norm_ws(question)
+    user_payload = f"Pergunta: {qn}\n\nSinais:\n{signals}"
     _, data = call_llm(_TRIAGE_PROMPT, user_payload, expect_json=True, max_tokens=150)
     if isinstance(data, dict) and "action" in data:
         return {"action": data.get("action"), "ask": data.get("ask", "")}
@@ -760,11 +769,16 @@ def _format_direct(name: Optional[str], dept: Optional[str], contacts: Dict[str,
                    context_snippets: List[str]) -> str:
     """Formata uma resposta direta com as informações encontradas, sem usar o LLM."""
     parts = []
-    if name: parts.append(name)
-    if dept: parts.append(dept)
-    if contacts.get("phones"): parts.append("📞 " + ", ".join(contacts["phones"]))
-    if contacts.get("emails"): parts.append("✉️ " + ", ".join(contacts["emails"]))
-    if parts: return " — ".join(parts)
+    if name:
+        parts.append(name)
+    if dept:
+        parts.append(dept)
+    if contacts.get("phones"):
+        parts.append("📞 " + ", ".join(contacts["phones"]))
+    if contacts.get("emails"):
+        parts.append("✉️ " + ", ".join(contacts["emails"]))
+    if parts:
+        return " — ".join(parts)
     return (context_snippets[0] if context_snippets else "Não encontrei.")[:400]
 
 
@@ -784,30 +798,11 @@ def _llm_resposta_final(question: str, context_snippets: List[str], name: Option
 
 
 # ==== Pipeline Principal de Resposta ====
+# Pipeline principal para responder a uma pergunta usando uma abordagem híbrida (busca lexical e vetorial).
 def answer_question(question: str, embeddings_model: HuggingFaceEmbeddings, vectorstore: FAISS, *, k: int = 5,
                     fetch_k: int = 20, debug: bool = False) -> Dict[str, Any]:
-    """
-    Pipeline principal para responder a uma pergunta usando uma abordagem híbrida (busca lexical e vetorial).
-    """
-    # INÍCIO DAS MODIFICAÇÕES (DEBUG)
-    t0 = _now()
-    dbg = {
-        "question": question,
-        "timing_ms": {},
-        "mq_variants": [],
-        "faiss": {"k": None, "candidates": []},
-        "rerank": {"name": RERANKER_NAME if RERANKER_ENABLED else None,
-                   "enabled": bool(RERANKER_ENABLED),
-                   "top_k": RERANKER_TOP_K if RERANKER_ENABLED else None,
-                   "scored": []},
-        "chosen": {"confidence": None},
-    }
-
     q = _norm_ws(question)
-    if not q:
-        return {"answer": "Não entendi a pergunta. Pode reformular?", "citations": [], "context_found": False}
-
-    # --- Debug container + cronômetro total ---
+    route_mode = None
     t0 = time.perf_counter()
     dbg = {
         "question": q,
@@ -823,6 +818,9 @@ def answer_question(question: str, embeddings_model: HuggingFaceEmbeddings, vect
         "chosen": {"confidence": None},
     }
 
+    if not q:
+        return {"answer": "Não entendi a pergunta. Pode reformular?", "citations": [], "context_found": False}
+
     try:
         all_docs: List[Document] = list(getattr(vectorstore.docstore, "_dict", {}).values())
     except Exception:
@@ -835,7 +833,7 @@ def answer_question(question: str, embeddings_model: HuggingFaceEmbeddings, vect
     if terms and all_docs:
         for d in all_docs:
             src = (d.metadata.get("source") or "").lower()
-            score_bonus = 8 if any(_strip_accents_lower(h) in src for h in dept_hints) else 0
+            score_bonus = DEPT_BONUS if any(_strip_accents_lower(h) in src for h in dept_hints) else 0
             hits = _sentence_hits_by_name(d.page_content or "", terms)
             if hits:
                 best = max(sc for _, sc in hits) + score_bonus
@@ -843,9 +841,11 @@ def answer_question(question: str, embeddings_model: HuggingFaceEmbeddings, vect
         lex_hits.sort(key=lambda x: x[2], reverse=True)
         lex_hits = lex_hits[:6]
 
-    if (ROUTE_FORCE != "vector") and lex_hits:
+    if (ROUTE_FORCE != "vector") and lex_hits and not HYBRID_ENABLED:
+        route_mode = "lexical"
         if debug:
-            dbg["route"] = "lexical"
+            dbg["route"] = route_mode
+
         # Se a busca lexical encontrou candidatos fortes, processa-os.
         sentence_snippets: List[str] = []
 
@@ -855,7 +855,8 @@ def answer_question(question: str, embeddings_model: HuggingFaceEmbeddings, vect
         for doc, hits, _best in lex_hits:
             for s, _ in hits[:2]:
                 sentence_snippets.append(s)
-            if len(sentence_snippets) >= 6: break
+            if len(sentence_snippets) >= 6:
+                break
 
         contacts = _extract_contacts(sentence_snippets)
         name_terms = [t for t in terms if t.isalpha()]
@@ -953,6 +954,22 @@ def answer_question(question: str, embeddings_model: HuggingFaceEmbeddings, vect
             result["debug"] = dbg
 
         _log_debug(f"Timing(ms): {dbg['timing_ms']}")
+        # --- TELEMETRIA ---
+        try:
+            log_event(
+                os.getenv("LOG_DIR", "./logs"),
+                {
+                    "question": q,
+                    "route": route_mode or "lexical",
+                    "confidence": dbg.get("chosen", {}).get("confidence"),
+                    "timing_ms": dbg.get("timing_ms", {}),
+                    "mq_variants": dbg.get("mq_variants", []),
+                    "faiss_top": (dbg.get("faiss", {}) or {}).get("candidates", [])[:5],
+                    "ctx_docs": len(result.get("citations", [])),
+                },
+            )
+        except Exception:
+            pass
         return result
 
     # Estratégia 2: Fallback para Busca Vetorial com Multi-Query e Rerank
@@ -962,8 +979,9 @@ def answer_question(question: str, embeddings_model: HuggingFaceEmbeddings, vect
     t_retrieval0 = time.perf_counter()
 
     # DEBUG: rota vetorial
+    route_mode = "vector"
     if debug:
-        dbg.setdefault("route", "vector")
+        dbg.setdefault("route", route_mode)
 
     # 1. Gera variações da pergunta para uma busca mais abrangente.
     queries = [q]
@@ -1023,23 +1041,36 @@ def answer_question(question: str, embeddings_model: HuggingFaceEmbeddings, vect
         return (src, chk, d.page_content[:64])
 
     cands = _dedupe_preserve_order(cands, key=_doc_key)
+    # === MERGE HÍBRIDO: adiciona candidatos lexicais antes do rerank ===
+    if HYBRID_ENABLED and lex_hits and (ROUTE_FORCE != "vector"):
+        lex_docs = [d for d, _hits, _best in lex_hits]
+        all_merged = _dedupe_preserve_order(list(cands) + lex_docs, key=_doc_key)
 
-    if debug:
-        dbg.setdefault("timing_ms", {})
-        dbg["timing_ms"]["retrieval"] = round((time.perf_counter() - t_retrieval0) * 1000.0, 1)
-        # snapshot dos candidatos crus (antes do rerank), limitado a 10
-        dbg["faiss"]["k"] = len(cands)
-        dbg["faiss"]["candidates"] = [
-            {
-                "source": (getattr(d, "metadata", {}) or {}).get("source"),
-                "chunk": (getattr(d, "metadata", {}) or {}).get("chunk", 1),
-                "preview": (getattr(d, "page_content", "") or "").strip().replace("\n", " ")[:160],
-                "score": getattr(d, "score", None),
-            } for d in cands[:10]
-        ]
+        by_src = {}
+        cands_merged = []
+        for d in all_merged:
+            src = (getattr(d, "metadata", {}) or {}).get("source", "")
+            by_src[src] = by_src.get(src, 0) + 1
+            if by_src[src] <= MAX_PER_SOURCE:
+                cands_merged.append(d)
+        cands = cands_merged
+
+        route_mode = "hybrid"                # <- MOVIDO PARA DENTRO
+        if debug:
+            dbg["route"] = route_mode
+            dbg.setdefault("timing_ms", {})
+            dbg["faiss"]["k"] = len(cands)
+            dbg["faiss"]["candidates"] = [
+                {
+                    "source": (getattr(d, "metadata", {}) or {}).get("source"),
+                    "chunk": (getattr(d, "metadata", {}) or {}).get("chunk", 1),
+                    "preview": (getattr(d, "page_content", "") or "").strip().replace("\n", " ")[:160],
+                    "score": getattr(d, "score", None),
+                } for d in cands[:10]
+            ]
+
         # tempo de retrieval
-        dbg["timing_ms"]["retrieval"] = round((time.perf_counter() - t_retrieval0) * 1000.0, 1)
-
+        dbg["timing_ms"]["retrieval"] = _elapsed_ms(t_retrieval0)
 
     # Coleta de dados de debug após busca FAISS
     dbg["faiss"]["k"] = len(cands)
@@ -1130,24 +1161,25 @@ def answer_question(question: str, embeddings_model: HuggingFaceEmbeddings, vect
                 "context_found": False,
                 "confidence": conf,
             }
-            # ANEXA DEBUG TAMBÉM NESTE EARLY-RETURN
-            if debug:
-                dbg["timing_ms"]["total"] = _elapsed_ms(t0)
-                # se chegamos aqui sem rota definida, defina como "vector" (estamos no fallback vetorial)
-                dbg["route"] = dbg.get("route") or "vector"
-                # snapshot mínimo dos candidatos finais (se houver)
-                dbg.setdefault("faiss", {})
-                dbg["faiss"]["k"] = len(docs) if docs else 0
-                if docs:
-                    dbg["faiss"]["candidates"] = [_pack_doc(d, getattr(d, "score", None)) for d in docs[:5]]
-                # se rerank não rodou, deixe explícito
-                dbg.setdefault("rerank", {})
-                dbg["rerank"].setdefault("enabled", False)
-                dbg["rerank"].setdefault("name", None)
-                dbg["rerank"].setdefault("scored", [])
-                if DEBUG_PAYLOAD:
-                    result["debug"] = dbg
+            # --- TELEMETRIA (sempre, mesmo sem debug) ---
+            try:
+                log_event(
+                    os.getenv("LOG_DIR", "./logs"),
+                    {
+                        "question": q,
+                        "route": route_mode or "vector",  # <- usa a rota real mesmo com debug=False
+                        "confidence": float(conf) if conf is not None else None,
+                        "timing_ms": dbg.get("timing_ms", {}),
+                        "mq_variants": dbg.get("mq_variants", []),
+                        "faiss_top": (dbg.get("faiss", {}) or {}).get("candidates", [])[:5],
+                        "ctx_docs": len(result.get("citations", [])),
+                    },
+                )
+            except Exception:
+                pass
+
             return result
+
 
     # 6. Se a confiança for aceitável, processa os documentos para a resposta final.
     top_texts = [d.page_content for d in docs]
@@ -1159,13 +1191,14 @@ def answer_question(question: str, embeddings_model: HuggingFaceEmbeddings, vect
     else:
         # Caso contrário, usa o início do documento principal como contexto.
         body = _norm_ws(docs[0].page_content)
-        if len(body) > 500: body = body[:500].rstrip() + "..."
+        if len(body) > 500:
+            body = body[:500].rstrip() + "..."
         context_snippets = [body]
 
     # Gera a resposta final com o LLM, mas sem metadados de nome/depto, pois esta é uma busca genérica.
     t_llm = _now()
-    # DEBUG: rota vetorial
-    if debug:
+    # DEBUG: rota vetorial (não sobrescrever se já marcamos 'hybrid' no merge)
+    if debug and dbg.get("route") != "hybrid":
         dbg["route"] = "vector"
 
     final_text = _llm_resposta_final(q, context_snippets, None, None, {"emails": [], "phones": []})
@@ -1216,4 +1249,20 @@ def answer_question(question: str, embeddings_model: HuggingFaceEmbeddings, vect
         result["debug"] = dbg
 
     _log_debug(f"Timing(ms): {dbg['timing_ms']}")
+    # --- TELEMETRIA ---
+    try:
+        log_event(
+            os.getenv("LOG_DIR", "./logs"),
+            {
+                "question": q,
+                "route": route_mode or "vector",                      # <- usa a rota real mesmo com debug=False
+                "confidence": float(conf) if conf is not None else None,
+                "timing_ms": dbg.get("timing_ms", {}),
+                "mq_variants": dbg.get("mq_variants", []),
+                "faiss_top": (dbg.get("faiss", {}) or {}).get("candidates", [])[:5],
+                "ctx_docs": len(result.get("citations", [])),
+            },
+        )
+    except Exception:
+        pass
     return result

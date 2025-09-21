@@ -1,218 +1,131 @@
-# RAG Microservice — README (atualizado)
+# RAG Assist (UFEX) — README
 
-Este projeto implementa um microserviço **RAG** (Retrieval-Augmented Generation) com duas rotas de recuperação (lexical e vetorial), **reranker** via CrossEncoder e orquestração opcional por **Agente** (LangGraph). Aqui você encontra **como rodar**, **como depurar**, **como configurar pesos e confiança**, e um **diagrama** do fluxo.
-
-> Se preferir um documento dedicado de arquitetura, veja **ARCHITECTURE.md** (inclui o mesmo diagrama e explicações detalhadas).
-
----
+> Sistema de pergunta–resposta (RAG) com **rota lexical**, **rota vetorial** (FAISS + CrossEncoder) e modo **híbrido**. Inclui telemetria JSONL e parâmetros ajustáveis por `.env`.
 
 ## Sumário
-- [Arquitetura (resumo + diagrama)](#arquitetura-resumo--diagrama)
-- [Requisitos & Setup](#requisitos--setup)
-- [Configuração (.env)](#configuração-env)
-- [Executando o ETL (build do índice)](#executando-o-etl-build-do-índice)
-- [Subindo a API](#subindo-a-api)
-- [Consultas & Debug](#consultas--debug)
-- [Como funcionam os "pesos" e a confiança](#como-funcionam-os-pesos-e-a-confiança)
-- [Boas práticas & Troubleshooting](#boas-práticas--troubleshooting)
+- [Arquitetura](#arquitetura)
+- [Como rodar](#como-rodar)
+- [Variáveis de ambiente](#variáveis-de-ambiente)
+- [Como os “pesos” funcionam](#como-os-pesos-funcionam)
+- [Telemetria](#telemetria)
+- [Dicas e troubleshooting](#dicas-e-troubleshooting)
 
 ---
 
-## Arquitetura (resumo + diagrama)
-
-**Fluxo alto nível:**
-1. O usuário chama `POST /query` com sua pergunta.
-2. A API (opcionalmente) faz triagem de intenção.
-3. **Rota Lexical** (prioritária): busca por sentenças que batem com termos da pergunta (com **bônus** se a fonte pertencer a um **departamento** citado). Se for suficiente, responde.
-4. **Rota Vetorial** (fallback/forçada): gera **multi-queries** com base em **sinônimos** (terms.yml), consulta **FAISS**, **reranqueia** com **CrossEncoder** e calcula uma **confiança**. Se `confidence >= CONFIDENCE_MIN` e `REQUIRE_CONTEXT=true`, responde.
-5. O **Agente** (LangGraph) pode tentar **AUTO_RESOLVER** chamando o RAG; se não houver contexto, retorna **PEDIR_INFO**.
-
-### Diagrama (Mermaid)
-
-> Visualiza corretamente no GitHub/GitLab/VSCode com extensão Mermaid.
+## Arquitetura
 
 ```mermaid
-flowchart LR
-    subgraph Client
-      U[Usuário]
-    end
-    subgraph API
-      A[Flask API<br/>/query]
-      H[Health/Metrics]
-    end
-    subgraph Retrieval
-      VS[(FAISS Index)]
-      EMB[HF Embeddings]
-      MQ[Multi-Query<br/> + Sinônimos]
-      LEX["Busca Lexical<br/>(sentenças + bônus de depto)"]
-      RER[CrossEncoder<br/>(Reranker)]
-    end
-    subgraph LLM
-      TRI[LLM Triagem]
-      GEN[LLM Geração de Resposta]
-    end
-    subgraph ETL
-      LD[Loaders<br/>(pdf, docx, md, txt, code, ...)]
-      SPL[Chunking]
-      EMB_E[HF Embeddings]
-      VS_B[FAISS Build/Update]
-      DB[(PostgreSQL<br/>hashes/chunks)]
-    end
-    subgraph Agent
-      TG[Triagem]
-      AR[Auto Resolver<br/>(chama RAG)]
-      PD[Pedir Info]
-    end
-
-    U -->|Pergunta| A
-    A -->|triagem opcional| TRI
-    TRI -->|ação| TG
-    TG -->|AUTO_RESOLVER| AR
-    TG -->|PEDIR_INFO| PD
-
-    AR -->|Rota 1| LEX
-    LEX -->|se encontrou| GEN
-    AR -->|Rota 2| MQ --> VS --> RER --> GEN
-    GEN -->|Resposta + Citações + Confiança| A
-
-    H --- A
-
-    %% ETL
-    LD --> SPL --> EMB_E --> VS_B --> VS
-    VS_B --> DB
-    DB -->|incremental| VS_B
-
-    %% Embeddings em runtime
-    A --- EMB
-    A --- VS
+flowchart TD
+    Q[Usuário pergunta] -->|normaliza| NQ[Normalização & sinais]
+    NQ -->|candidatos léxicos| LEX[Matcher de sentenças (fuzzy)]
+    NQ --> MQ[Multi-Query]
+    MQ -->|q1..qn| FAISS[(FAISS)]
+    LEX -. opcional/híbrido .-> MERGE
+    FAISS --> MERGE[Merge + Dedup + Cap por fonte]
+    MERGE --> RERANK[CrossEncoder (rerank)]
+    RERANK --> CTX[Seleção de contexto]
+    CTX --> LLM[LLM - resposta final]
+    LLM --> OUT[Markdown + Citações]
+    OUT --> LOG[telemetry.jsonl]
 ```
 
-> Versão standalone (com mais detalhes): veja **ARCHITECTURE.md**.
+- **LEX**: varre sentenças por _partial ratio_ / nomes aproximados. Usa `LEXICAL_THRESHOLD` e soma `DEPT_BONUS` quando a _source_ bate o departamento.
+- **FAISS**: busca vetorial com _multi-query_.
+- **Híbrido**: se `HYBRID_ENABLED=true`, une candidatos **lexicais + vetoriais** antes do **CrossEncoder**, com **cap por fonte** (`MAX_PER_SOURCE`).
+- **Rerank**: CrossEncoder (ex.: `jinaai/jina-reranker-v2-base-multilingual`) decide a ordem final.
+- **LLM**: sintetiza a resposta e formata em Markdown com citações.
 
 ---
 
-## Requisitos & Setup
+## Como rodar
 
-- Python 3.10+ (recomendado)
-- Docker opcional (há `Dockerfile.cpu` e `docker-compose.cpu.yml`)
-- FAISS (via LangChain/FAISS) + HuggingFace Embeddings
-- Chaves de LLM (Gemini/OpenAI) se for usar geração/triagem
+1. **ETL**: gere/atualize o índice FAISS (garanta o mesmo modelo de embeddings na API e no ETL).
+2. **API**: exporte as variáveis do `.env` e inicie o serviço.
+3. Faça uma requisição `POST /query` com `{"question": "...", "debug": true}` para inspecionar `debug`.
 
-Instale dependências (exemplo):
-```bash
-pip install -r requirements.txt
-```
+> Pré-requisitos: Python 3.10+, `langchain_community`, `sentence_transformers` (opcional, para o rerank), `PyYAML`, `rapidfuzz`.
 
 ---
 
-## Configuração (.env)
+## Variáveis de ambiente
 
-Crie um `.env` baseado em `.env.example`. Principais chaves:
-
-```env
-# Modelos
+Essenciais:
+```
 EMBEDDINGS_MODEL=intfloat/multilingual-e5-large
-CROSS_ENCODER=jinaai/jina-reranker-v2-base-multilingual
-
-# Limiar de resposta segura
 CONFIDENCE_MIN=0.32
+STRUCTURED_ANSWER=true
 REQUIRE_CONTEXT=true
-
-# Execução
-ROUTE_FORCE=auto   # auto | vector
-TOP_K=6
-PER_QUERY=4
-
-# Provedores LLM (opcional)
-OPENAI_API_KEY=...
-GEMINI_API_KEY=...
 ```
 
-> **Importante:** o **ETL** agora lê `EMBEDDINGS_MODEL` do `.env`, alinhando o índice com a API em runtime.
-
----
-
-## Executando o ETL (build do índice)
-
-1. Coloque seus arquivos em `./data/` (pdf, docx, md, txt, csv, json, código, etc.).
-2. Rode o build (exemplos):
-   ```bash
-   python etl_build_index.py
-   # ou
-   python etl_orchestrator.py --rebuild
-   ```
-3. Saída padrão do índice: `./vector_store/faiss_index` (pode variar conforme seu script).
-4. Para atualizações incrementais, use os modos de **update** ou **watch** conforme seu orquestrador de ETL.
-
----
-
-## Subindo a API
-
-Via Python:
-```bash
-uvicorn api:app --host 0.0.0.0 --port 5000
+Lexical & híbrido:
+```
+HYBRID_ENABLED=true           # merge lexical+vetorial antes do rerank
+LEXICAL_THRESHOLD=86          # corte para aceitar uma sentença lexical
+DEPT_BONUS=8                  # bônus por “source” compatível com depto
+MAX_PER_SOURCE=2              # diversidade no merge
 ```
 
-Via Docker Compose:
-```bash
-docker compose -f docker-compose.cpu.yml up --build
+Rerank:
+```
+RERANKER_ENABLED=true
+RERANKER_NAME=jinaai/jina-reranker-v2-base-multilingual
+RERANKER_CANDIDATES=30
+RERANKER_TOP_K=5
+RERANKER_MAX_LEN=512
+RERANKER_DEVICE=cpu
 ```
 
-Endpoints úteis:
-- `POST /query` — consulta RAG
-- `GET /healthz` — health/readiness
-- `GET /metrics` — contadores simples
-
----
-
-## Consultas & Debug
-
-Exemplo de chamada com debug:
-```bash
-curl -s -H "Content-Type: application/json" \
-  -d '{"question":"onde encontro informação de monitoria de computação?","debug":true}' \
-  http://localhost:5000/query | jq
+Telemetria:
+```
+LOG_DIR=./logs
+DEBUG_LOG=true
+DEBUG_PAYLOAD=true
 ```
 
-Campos úteis no `debug`:
-- `route`: `"lexical"` ou `"vector"`
-- `mq_variants`: queries geradas com base em sinônimos (terms.yml)
-- `faiss.candidates[*].score`: similaridade vinda do FAISS (quando disponível)
-- `rerank.enabled`: se o CrossEncoder carregou
-- `rerank.scored[*].score`: score **0–1** do CrossEncoder (comanda a ordenação final)
-- `confidence`: máximo dos scores do reranker (após normalização, se aplicável)
+---
+
+## Como os “pesos” funcionam
+
+### 1) Peso **lexical**
+- Cada sentença candidata recebe um escore `best` (0–100) por:
+  - _match_ aproximado de nomes (Levenshtein),
+  - `partial_ratio` da pergunta na sentença.
+- A sentença só “entra no jogo” se `best >= LEXICAL_THRESHOLD`.
+- Se a _source_ do documento aparenta o mesmo **departamento** da pergunta, soma-se `DEPT_BONUS` ao melhor escore do documento.
+- Quando o **modo híbrido** está **desligado**, a rota lexical pode responder **sozinha** (retorno antecipado).
+- Quando o **modo híbrido** está **ligado**, as passagens lexicais **não retornam sozinhas**: elas são **fundidas** com as vetoriais e seguem para o **reranker**.
+
+### 2) Peso **vetorial + reranker**
+- O FAISS traz top-K por similaridade de embeddings (não supervisionado).
+- O **CrossEncoder** (supervisionado) reavalia **cada (pergunta, trecho)** e gera um **score 0..1**.  
+  Este **score do CrossEncoder** é o “peso” final que decide a ordem e a confiança (`conf = max(score)`).
+- Em modo **híbrido**, os trechos **lexicais** também passam pelo CrossEncoder. Assim, palavras/termos que “ajudam” de verdade **ganham peso** no **score supervisionado** do rerank.
 
 ---
 
-## Como funcionam os "pesos" e a confiança
+## Telemetria
 
-### Rota Lexical
-- Extraímos **termos candidatos** (palavras alfanuméricas ≥3, e-mails; stopwords são ignoradas).
-- Procuramos **sentenças** que batem forte (fuzzy/regex). Cada acerto contribui para o score do doc.
-- Se a **fonte** do documento condiz com um **departamento** citado na pergunta (via `terms.yml`), aplicamos um **bônus** (ex.: `+8`) ao melhor score daquele doc.
-- Havendo hits suficientes, a resposta sai **sem** reranker (os scores exibidos podem ser `0.0` por design).
+Arquivo: `LOG_DIR/queries.log` (JSONL).  
+Campos úteis:
+- `question`, `route` (`lexical|vector|hybrid`), `confidence` (0..1),  
+- `timing_ms` (`retrieval`, `reranker`, `llm`, `total`),  
+- `mq_variants`, `faiss_top` (amostra de candidatos), `ctx_docs`.
 
-### Rota Vetorial (FAISS + Reranker)
-- Geramos **multi-queries** com **sinônimos/aliases** do `terms.yml` para ampliar cobertura.
-- Recuperamos candidatos no **FAISS** e registramos seus `score`s (quando disponíveis).
-- Aplicamos **CrossEncoder** (0–1) para ordenar por relevância contextual.
-- **Confiança (`confidence`)** = **máximo** dos scores do reranker. Se `confidence >= CONFIDENCE_MIN` **e** `REQUIRE_CONTEXT=true`, respondemos como “contexto suficiente”.
-
-> Ajuste `CONFIDENCE_MIN` para respostas mais **conservadoras** (maior) ou mais **falantes** (menor).
+Basta importar e chamar:
+```python
+from telemetry import log_event
+log_event(os.getenv("LOG_DIR","./logs"), payload_dict)
+```
 
 ---
 
-## Boas práticas & Troubleshooting
+## Dicas e troubleshooting
 
-- **Alinhar Embeddings**: garanta que ETL **e** API usem o **mesmo** `EMBEDDINGS_MODEL`.
-- **Tamanho dos chunks**: ajuste para equilibrar recall e precisão (muitos micro-chunks podem “diluir” contexto; chunks enormes podem prejudicar rerank).
-- **Sinônimos atualizados**: mantenha `terms.yml` com aliases relevantes; limpe termos ambíguos.
-- **Observabilidade**: verifique `healthz`, counters/metrics e use `debug=true` em chamadas de teste.
-- **Rota forçada**: `ROUTE_FORCE=vector` ajuda a depurar FAISS/reranker sem interferência lexical.
-- **Cache** (opcional): cacheie embeddings/consultas frequentes para ganho de latência.
-- **Qualidade dos dados**: remova duplicatas e normalize fontes; metadados ajudam no rerank.
+- **Confiança baixa**: ajuste `RERANKER_NAME`, `RERANKER_CANDIDATES` e `CONFIDENCE_MIN`.
+- **Muito “mais do mesmo”** nas fontes: diminua `MAX_PER_SOURCE` (ex.: `1`).
+- **Lexical muito sensível**: aumente `LEXICAL_THRESHOLD` (ex.: `90`).
+- **CrossEncoder pesado**: rode em `cuda` (`RERANKER_DEVICE=cuda`) ou desative (`RERANKER_ENABLED=false`).
 
 ---
 
-## Licença
-MIT (ou a de sua preferência).
+> Dúvidas? Abra o `debug:true` na requisição para ver os detalhes da rota, candidatos, tempos e _scores_.
