@@ -9,36 +9,29 @@ document.addEventListener('DOMContentLoaded', () => {
         const question = userInput.value.trim();
         if (!question) return;
 
-        // Adiciona a mensagem do usuário à tela
+        // mensagem do usuário
         appendMessage(question, 'user');
         userInput.value = '';
 
-        // Mostra o indicador de "digitando"
+        // indicador "Pensando..."
         const typingIndicator = showTypingIndicator();
 
         try {
-            // Faz a chamada para a nossa API backend
-            const response = await fetch('http://localhost:5000/query', {
+            const response = await fetch('/query', {
                 method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify({ question: question })
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ question })
             });
 
-            // Remove o indicador de "digitando"
             typingIndicator.remove();
 
-            if (!response.ok) {
-                throw new Error(`Erro na API: ${response.statusText}`);
-            }
+            if (!response.ok) throw new Error(`Erro na API: ${response.statusText}`);
 
             const data = await response.json();
-            // Adiciona a resposta da IA à tela
             appendMessage(data.answer, 'ai');
-
         } catch (error) {
             console.error('Falha ao buscar resposta:', error);
+            typingIndicator.remove();
             appendMessage('Desculpe, não consegui me conectar ao meu cérebro. Tente novamente mais tarde.', 'ai');
         }
     });
@@ -58,8 +51,6 @@ document.addEventListener('DOMContentLoaded', () => {
         messageDiv.appendChild(avatarDiv);
         messageDiv.appendChild(textDiv);
         chatBox.appendChild(messageDiv);
-
-        // Rola para a mensagem mais recente
         chatBox.scrollTop = chatBox.scrollHeight;
     }
 

@@ -1,0 +1,8 @@
+# Este arquivo define as dependências específicas para o ambiente de GPU.
+# Ele herda as dependências do 'requirements.txt'.
+# A biblioteca 'faiss-gpu' seria adicionada aqui se necessária.
+# O PyTorch com suporte a CUDA é instalado diretamente no Dockerfile.gpu
+# para garantir a compatibilidade com a versão do CUDA.
+-r requirements.txt
+faiss-cpu==1.8.0
+# NÃO colocar torch aqui: instalamos no Dockerfile.gpu com a roda CUDA

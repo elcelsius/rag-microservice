@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="pt-br">
+<head>
+  <meta charset="utf-8" />
+  <title>RAG Microservice</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <style>
+    body { font-family: system-ui, Arial, sans-serif; max-width: 800px; margin: 40px auto; padding: 0 16px; }
+    textarea { width: 100%; min-height: 120px; }
+    pre { background: #f6f6f6; padding: 12px; border-radius: 8px; overflow:auto; }
+    .row { display: flex; gap: 8px; margin-top: 8px; }
+    button { padding: 10px 16px; cursor: pointer; }
+  </style>
+</head>
+<body>
+  <div id="api-status" style="padding:10px; background:#fff3cd; color:#664d03; border:1px solid #ffecb5; border-radius:8px; margin:12px; display:flex; align-items:center; gap:8px;">
+    <span>⏳ Carregando API…</span>
+    <small id="api-status-tip">(aguarde a inicialização dos modelos)</small>
+  </div>
+  <h1>RAG Microservice</h1>
+  <p>Digite uma pergunta e envie:</p>
+  <textarea id="q" placeholder="Ex.: Qual o e-mail do departamento de computação?"></textarea>
+  <div class="row">
+    <button id="ask">Perguntar</button>
+    <span id="status"></span>
+  </div>
+  <h3>Resposta</h3>
+  <pre id="out">{ aguardando... }</pre>
+
+  <script>
+    const $ = sel => document.querySelector(sel);
+    async function safeJson(resp) {
+      const txt = await resp.text();
+      try { return {parsed: JSON.parse(txt), raw: txt}; }
+      catch { return {parsed: null, raw: txt}; }
+    }
+    $('#ask').onclick = async () => {
+      const query = $('#q').value.trim();
+      $('#status').textContent = 'enviando...';
+      $('#out').textContent = '{ aguardando... }';
+      try {
+        const res = await fetch('/query', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ query })
+        });
+        const {parsed, raw} = await safeJson(res);
+        $('#status').textContent = `${res.status} ${res.ok ? 'ok' : 'erro'}`;
+        $('#out').textContent = parsed ? JSON.stringify(parsed, null, 2) : raw;
+      } catch (e) {
+        $('#out').textContent = String(e);
+        $('#status').textContent = 'erro de rede';
+      }
+    };
+  </script>
+
+<!-- === Aviso de readiness da API === -->
+<div id="app-status" style="
+  position: fixed; bottom: 12px; left: 12px; z-index: 9999;
+  background: #111; color: #fff; padding: 10px 14px; border-radius: 8px;
+  font: 14px/1.3 system-ui, -apple-system, Segoe UI, Roboto, Arial;
+  box-shadow: 0 6px 20px rgba(0,0,0,.25);
+  display:none;
+"></div>
+
+<script>
+(function statusPoll(){
+  const el = document.getElementById('app-status');
+  let shown = false;
+
+  async function poll() {
+    try {
+      const res = await fetch('/api/healthz', { cache: 'no-store' });
+      const data = await res.json();
+      if (data && data.ready === true) {
+        if (shown) {
+          el.textContent = '✅ Sistema pronto para uso';
+          setTimeout(() => { el.style.display = 'none'; }, 1500);
+        }
+        // pronto: não precisa mais checar
+        return;
+      }
+      // não pronto ainda
+      el.textContent = '⏳ Inicializando serviços…';
+      if (!shown) { el.style.display = 'block'; shown = true; }
+    } catch (e) {
+      el.textContent = '⚠️ Aguardando API…';
+      if (!shown) { el.style.display = 'block'; shown = true; }
+    }
+    // tentar de novo em 2s
+    setTimeout(poll, 2000);
+  }
+  poll();
+})();
+</script>
+<script>
+(function () {
+  const statusEl = document.getElementById('api-status');
+  const askBtn = document.getElementById('ask');
+  const input = document.getElementById('q');
+
+  function setDisabled(disabled) {
+    if (askBtn) askBtn.disabled = disabled;
+    if (input) input.disabled = disabled;
+    if (disabled && statusEl) statusEl.style.display = 'flex';
+    if (!disabled && statusEl) statusEl.style.display = 'none';
+  }
+
+  async function ping() {
+    try {
+      const r = await fetch('/api/healthz', { cache: 'no-store' });
+      const j = await r.json();
+      const ready = !!j.ready;
+      setDisabled(!ready);
+      if (ready) return; // para o polling
+    } catch (e) {
+      setDisabled(true);
+    }
+    setTimeout(ping, 1000);
+  }
+
+  setDisabled(true);
+  ping();
+})();
+</script>
+</body>
+</html>
