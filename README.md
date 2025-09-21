@@ -44,7 +44,7 @@ flowchart LR
       VS[(FAISS Index)]
       EMB[HF Embeddings]
       MQ[Multi-Query<br/> + Sinônimos]
-      LEX[Busca Lexical<br/>(sentenças + bônus de depto)]
+      LEX["Busca Lexical<br/>(sentenças + bônus de depto)"]
       RER[CrossEncoder<br/>(Reranker)]
     end
     subgraph LLM
