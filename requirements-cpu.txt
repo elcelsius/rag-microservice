@@ -6,3 +6,6 @@ faiss-cpu==1.8.0
 torch==2.4.0
 torchvision==0.19.0
 torchaudio==2.4.0
+
+pandas==2.2.2
+datasets==2.21.0

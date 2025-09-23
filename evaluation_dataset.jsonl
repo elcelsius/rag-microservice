@@ -1,0 +1,35 @@
+{"question": "Como solicitar a reserva do anfiteatro ou das salas da pós-graduação?", "ground_truth": ["Para solicitar a reserva do Anfiteatro ou das Salas 1, 2, 3, 4 e 5 da Pós-Graduação da FC, favor enviar um e-mail para stpg.fc@unesp.br  com as seguintes informações:"]}
+{"question": "Qual é o e-mail institucional geral da DTI/FC?", "ground_truth": ["dti.fc@unesp.br\tT"]}
+{"question": "Qual é o e-mail de atendimento da secretaria da DTI/FC?", "ground_truth": ["Margareth Caniati, e-mail: margareth.caniati@unesp.br\t- Atendimento e recepção da secretaria do DTI/FC;"]}
+{"question": "Qual é o e-mail para contato com a equipe de redes da DTI?", "ground_truth": ["redes.fc@unesp.br"]}
+{"question": "Qual link devo usar para fazer o cadastro inicial no sistema de impressão do LDC?", "ground_truth": ["O cadastro deverá ser feito através deste link: Cadastro de acesso (apenas no primeiro uso)."]}
+{"question": "Como adquirir cotas para impressão no LDC?", "ground_truth": ["Adquira cotas através deste link ou diretamente no guichê da Seção Técnica de Finanças"]}
+{"question": "Onde faço login para enviar trabalhos de impressão no LDC?", "ground_truth": ["O sistema é integrado ao login no Laboratório Didático de Computação (LDC), localizado no prédio do LEPEC;"]}
+{"question": "O que acontece após enviar um arquivo para impressão no LDC?", "ground_truth": ["Será exibido um aviso confirmando a impressão;"]}
+{"question": "Onde retiro as impressões enviadas no LDC?", "ground_truth": ["Busque sua impressão na impressora localizada no corredor do LEPEC;"]}
+{"question": "Qual aviso devo observar sobre a cobrança de cotas de impressão?", "ground_truth": ["A cobrança é debitada automaticamente do seu saldo, por isso tome cuidado ao mandar sua impressão. Escolha corretamente a impressora, pois os custos de impressão são diferentes para cada tipo de trabalho."]}
+{"question": "Há reembolso para impressões enviadas incorretamente?", "ground_truth": ["Não serão reembolsados trabalhos impressos de maneira incorreta ou acidentalmente."]}
+{"question": "Como devo cuidar do meu login ao usar o LDC?", "ground_truth": ["Cuide do seu login e senha! Não deixe o computador “logado” quando não estiver por perto. Sua segurança é a sua senha."]}
+{"question": "Que configuração de papel devo verificar antes de imprimir?", "ground_truth": ["Certifique-se de que seu documento está configurado para o tamanho correto do papel antes de imprimir. Sem essa configuração a impressão pode não prosseguir."]}
+{"question": "Qual é o valor de uma impressão monocromática para alunos?", "ground_truth": ["Valor por página: R$ 0,30"]}
+{"question": "Qual é o custo da impressão duplex preta no LDC?", "ground_truth": ["Valor por página Duplex (frente/verso): R$ 0,50 (R$0,25 frente + R$0,25 verso)"]}
+{"question": "Quanto custa imprimir uma página colorida?", "ground_truth": ["Valor por página: R$ 2,00"]}
+{"question": "Qual o valor da impressão duplex colorida?", "ground_truth": ["Valor por página Duplex (frente/verso): R$ 3,90 (R$1,95 frente + R$1,95 verso)"]}
+{"question": "Quais são as formas de pagamento das cotas de impressão?", "ground_truth": ["Formas de pagamento:"]}
+{"question": "Qual link acesso para pagar cotas via PIX?", "ground_truth": ["2.1. Acessar o endereço eletrônico https://servicedesk.unesp.br/s/1003"]}
+{"question": "Qual a tabela de valores para impressão preto e branco?", "ground_truth": ["Preto e branco\tR$ 0,30\tR$ 0,50"]}
+{"question": "Qual a tabela de valores para impressão colorida?", "ground_truth": ["Colorido\tR$ 2,00\tR$ 3,90"]}
+{"question": "Onde o serviço de impressão do LEPEC está disponível?", "ground_truth": ["Serviço disponível no Laboratório de Ensino, Pesquisa e Extensão em Computação - LEPEC"]}
+{"question": "Qual o horário de funcionamento do LEPEC e onde fica o LDC?", "ground_truth": ["Atualmente o LDC está instalado no LEPEC (Laboratório de Ensino, Pesquisa e Extensão em Computação), prédio 27, ao lado do prédio da FUNDEB, próximo a portaria 2. Para utilização, os alunos devem se identificar com o técnico de plantão, na entrada do LEPEC, que passará instruções de como utilizar os computadores no Lab 1. O LEPEC funciona de segunda a sexta das 8h até 23h."]}
+{"question": "Qual link devo usar para agendar o uso do LDC?", "ground_truth": ["Para pedir agendamento de uso parcial da sala ou da sala toda, deve ser utilizado o chamado do seguinte link: https://servicedesk.fc.unesp.br/solicitacao/fc/laboratorios/agendamento-de-uso-do-laboratorio"]}
+{"question": "Onde consulto a agenda de disponibilidade do LDC?", "ground_truth": ["Confira disponibilidade do LDC na agenda pelo site: https://www.fc.unesp.br/#!/administracao/servico-tec-informatica/lab-de-computacao/agenda"]}
+{"question": "Qual é o contato de suporte do LDC?", "ground_truth": ["Dúvidas/informações/contato: suporte.fc@unesp.br ou pelos ramais 6308/9567."]}
+{"question": "Qual o telefone da Diretoria da Faculdade de Ciências?", "ground_truth": ["Fone: (14) 3103-6070"]}
+{"question": "Qual o e-mail da Diretoria da Faculdade de Ciências?", "ground_truth": ["E-mail: diretoria.fc@unesp.br"]}
+{"question": "Qual o telefone da Vice-Diretoria?", "ground_truth": ["Fone: (14) 3103-6072"]}
+{"question": "Qual o e-mail da Vice-Diretoria?", "ground_truth": ["E-mail: vice-diretoria.fc@unesp.br"]}
+{"question": "Qual o telefone da Seção de Apoio Administrativo (SAAd)?", "ground_truth": ["Fone: (14) 3103-6132"]}
+{"question": "Qual o e-mail da SAAd?", "ground_truth": ["E-mail: saad.fc@unesp.br"]}
+{"question": "Qual o telefone da STGP?", "ground_truth": ["Fone: (14) 3103-6129"]}
+{"question": "Qual o e-mail da STGP?", "ground_truth": ["E-mail: rh.fc@unesp.br"]}
+{"question": "Quais ramais posso usar para falar com o suporte do LDC?", "ground_truth": ["Dúvidas/informações/contato: suporte.fc@unesp.br ou pelos ramais 6308/9567."]}

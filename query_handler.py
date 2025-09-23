@@ -256,6 +256,38 @@ TERMS = load_terms()
 DEPARTMENTS = TERMS["departments"]  # dict slug -> label canônica
 ALIASES = TERMS["aliases"]  # dict termo -> [variações]
 SYNONYMS = TERMS["synonyms"]  # dict sigla -> [expansões]
+CUSTOM_MQ_EXPANSIONS = {
+    'reserva': [
+        'reserva anfiteatro stpg',
+        'email stpg reserva anfiteatro',
+        'solicitar sala pos graduacao stpg'
+    ],
+    'anfiteatro': [
+        'anfiteatro pos graduacao stpg',
+        'reserva sala anfiteatro faculdade de ciencias',
+        'agendar anfiteatro fc bauru'
+    ],
+    'impressao': [
+        'impressao ldc passo a passo',
+        'comprar cotas impressao ldc',
+        'envio arquivo impressao laboratorio didatico computacional'
+    ],
+    'cota': [
+        'cotas impressao pagamento pix',
+        'valor impressao frente verso ldc',
+        'tabela preco impressao faculdade ciencias'
+    ],
+    'ldc': [
+        'laboratorio didatico computacional agenda',
+        'agendar uso ldc lepec',
+        'horario funcionamento lepec'
+    ],
+    'contato': [
+        'telefone secretaria faculdade ciencias',
+        'email secretaria apoio administrativo',
+        'ramal suporte ldc'
+    ]
+}
 BOOSTS = TERMS["boosts"]  # dict de boosts opcionais
 print(f"[DICT] departamentos={len(DEPARTMENTS)} aliases={len(ALIASES)} synonyms={len(SYNONYMS)}")
 
@@ -513,9 +545,13 @@ def _gen_multi_queries(user_query: str, n: int, llm=None) -> List[str]:
     # 2) variações por sinônimos do dicionário
     s_norm = _strip_accents_lower(user_query)
     syn_vars = []
+    custom_vars = []
     for key, exps in SYNONYMS.items():
         if key in s_norm:
             syn_vars.extend(exps)
+    for key, exps in CUSTOM_MQ_EXPANSIONS.items():
+        if key in s_norm:
+            custom_vars.extend(exps)
 
     # 3) (opcional) pedir variantes ao LLM (se houver wrapper compatível)
     llm_vars = []
@@ -533,7 +569,7 @@ def _gen_multi_queries(user_query: str, n: int, llm=None) -> List[str]:
             llm_vars = []
 
     # 4) mescla e corta em n
-    merged = _dedupe_preserve_order([user_query] + base_local + syn_vars + llm_vars)
+    merged = _dedupe_preserve_order([user_query] + base_local + syn_vars + custom_vars + llm_vars)
     return merged[:n]
 
 

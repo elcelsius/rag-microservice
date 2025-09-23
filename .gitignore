@@ -21,6 +21,7 @@ Thumbs.db
 # Dependências do Docker (se aplicável, para o futuro)
 vendor/
 node_modules/
+reports/
 
 # Arquivos e pastas das IDEs
 .venv

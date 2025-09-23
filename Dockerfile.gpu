@@ -12,6 +12,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 ENV VENV_PATH=/opt/venv
 RUN python3 -m venv ${VENV_PATH}
 ENV PATH="${VENV_PATH}/bin:$PATH"
+ENV HF_HOME=/opt/hf-cache
 
 # Atualiza pip e instala PyTorch com CUDA antes das demais dependências.
 RUN pip install --no-cache-dir --upgrade pip \
@@ -19,7 +20,9 @@ RUN pip install --no-cache-dir --upgrade pip \
     torch torchvision torchaudio
 
 COPY requirements.txt requirements-gpu.txt ./
-RUN pip install --no-cache-dir -r requirements-gpu.txt
+RUN pip install --no-cache-dir -r requirements-gpu.txt \
+ && python -c "from huggingface_hub import snapshot_download; snapshot_download('intfloat/multilingual-e5-large', max_workers=8)" \
+ && python -c "from huggingface_hub import snapshot_download; snapshot_download('cross-encoder/ms-marco-MiniLM-L-6-v2', max_workers=8)"
 
 #--------------------------------------------------------------
 FROM python:3.11-slim AS runtime
@@ -34,7 +37,10 @@ ENV VENV_PATH=/opt/venv
 COPY --from=builder ${VENV_PATH} ${VENV_PATH}
 ENV PATH="${VENV_PATH}/bin:$PATH" \
     PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    HF_HOME=/opt/hf-cache
+
+COPY --from=builder /opt/hf-cache /opt/hf-cache
 
 COPY api.py ./
 COPY agent_workflow.py ./

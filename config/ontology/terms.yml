@@ -1,99 +1,98 @@
-# terms.yml
-# Arquivo de configuração centralizado para termos, siglas e entidades
-# do sistema RAG, compilado a partir da análise de 32 documentos.
-
-# Rótulos dos principais departamentos e diretorias (slug -> nome canônico)
-departments:
-  administracao: "Administração"
-  biologia: "Departamento de Ciências Biológicas"
-  computacao: "Departamento de Computação"
-  congregacao: "Congregação"
-  diretoria_academica: "Diretoria Técnica Acadêmica"
-  diretoria_administrativa: "Diretoria Técnica Administrativa"
-  dti: "Diretoria Técnica de Informática"
-  educacao: "Departamento de Educação"
-  educacaofisica: "Departamento de Educação Física"
-  fisica: "Departamento de Física e Meteorologia"
-  matematica: "Departamento de Matemática"
-  psicologia: "Departamento de Psicologia"
-  quimica: "Departamento de Química"
-  staepe: "Seção Técnica de Apoio ao Ensino, Pesquisa e Extensão"
-  stgp: "Seção Técnica de Gestão de Pessoas"
-  stpg: "Seção Técnica de Pós-Graduação"
-
-# Aliases para nomes comuns, usados para normalização e busca flexível.
 aliases:
-  andreia: ["andrea", "andria", "andréia", "andréa", "andreá"]
-  andréa: ["andreia", "andrea", "andréia"]
-
-# Siglas, abreviações e termos equivalentes. Essencial para o RAG.
-synonyms:
-  # Cursos
-  bcc: "Bacharelado em Ciência da Computação"
-  bsi: "Bacharelado em Sistemas de Informação"
-  psico: ""
-
-  # Departamentos e Seções (Siglas)
-  dco: "Departamento de Computação"
-  dta: "Diretoria Técnica Acadêmica"
-  dtad: "Diretoria Técnica Administrativa"
-  dpsi: "Departamento de Psicologia"
-  def: "Departamento de Educação Física"
-
-  # Seções da Diretoria Técnica Acadêmica (DTA)
-  stg: "Seção Técnica de Graduação"
-  stpg: "Seção Técnica de Pós-Graduação"
-  sta: "Seção Técnica Acadêmica"
-
-  # Seções da Diretoria Técnica Administrativa (DTAd)
-  saad: "Seção de Apoio Administrativo"
-  stf: "Seção Técnica de Finanças"
-  stm: "Seção Técnica de Materiais"
-
-  # Laboratórios e Locais
-  ldc: "Laboratório Didático Computacional"
-  lepec: "Laboratório de Ensino, Pesquisa e Extensão em Computação"
-
-  # Pró-Reitorias e Coordenadorias
-  cope: "Coordenadoria de Permanência Estudantil"
-  proex: "Pró-Reitoria de Extensão Universitária"
-  prograd: "Pró-reitoria de Graduação"
-  prope: "Pró-reitoria de Pesquisa"
-
-  # Outras Unidades
-  faac: "Faculdade de Arquitetura, Artes e Comunicação"
-  feb: "Faculdade de Engenharia de Bauru"
-  fundeb: "FUNDEB"
-  ipmet: "IPMET"
-
-  # Serviços e Sistemas
-  impressao: "Serviço de Impressão"
-  voip: "Telefonia VoIP"
-  rh: "Recursos Humanos / Seção Técnica de Gestão de Pessoas"
-  compras: "Seção Técnica de Materiais"
-  financas: "Seção Técnica de Finanças"
-
-# Palavras-chave importantes que podem aparecer em buscas
-keywords:
-  - "eduroam"
-  - "papercut"
-  - "plotter"
-  - "colação de grau"
-  - "moradia estudantil"
-  - "bolsas"
-  - "auxílios"
-  - "vestibular"
-  - "vunesp"
-  - "enade"
-  - "capes"
-  - "cnpq"
-  - "fapesp"
-  - "reserva"
-  - "anfiteatro"
-
-# Pesos opcionais por departamento para influenciar a relevância da busca
+  andreia:
+  - andrea
+  - andria
+  - andréia
+  - andréa
+  - andreá
+  andréa:
+  - andreia
+  - andrea
+  - andréia
 boosts:
   department:
+    biologia: 1.1
     computacao: 1.15
-    biologia: 1.10
+    dtad: 1.25
+    dti: 1.3
     psicologia: 1.05
+    stpg: 1.35
+departments:
+  administracao: Administração
+  biologia: Departamento de Ciências Biológicas
+  computacao: Departamento de Computação
+  congregacao: Congregação
+  diretoria_academica: Diretoria Tecnica Academica
+  diretoria_administrativa: Diretoria Tecnica Administrativa
+  dtad: Diretoria Tecnica Administrativa
+  dti: Diretoria Tecnica de Informatica
+  educacao: Departamento de Educação
+  educacaofisica: Departamento de Educação Física
+  fisica: Departamento de Física e Meteorologia
+  ldc: Laboratorio Didatico Computacional
+  matematica: Departamento de Matemática
+  psicologia: Departamento de Psicologia
+  quimica: Departamento de Química
+  staepe: Seção Técnica de Apoio ao Ensino, Pesquisa e Extensão
+  stgp: Seção Técnica de Gestão de Pessoas
+  stpg: Secao Tecnica de Pos-Graduacao
+keywords:
+- agendamento
+- anfiteatro
+- auxílios
+- bolsas
+- capes
+- cnpq
+- colação de grau
+- cotas
+- eduroam
+- enade
+- fapesp
+- impressao
+- ldc
+- moradia estudantil
+- papercut
+- plotter
+- reserva
+- saad
+- stpg
+- vestibular
+- vunesp
+synonyms:
+  anfiteatro: Anfiteatro da Pos-Graduacao
+  bcc: Bacharelado em Ciência da Computação
+  bsi: Bacharelado em Sistemas de Informação
+  compras: Seção Técnica de Materiais
+  cope: Coordenadoria de Permanência Estudantil
+  cotas: Cotas de impressao
+  dco: Departamento de Computação
+  def: Departamento de Educação Física
+  dpsi: Departamento de Psicologia
+  dta: Diretoria Técnica Acadêmica
+  dtad: Diretoria Técnica Administrativa
+  faac: Faculdade de Arquitetura, Artes e Comunicação
+  feb: Faculdade de Engenharia de Bauru
+  financas: Seção Técnica de Finanças
+  fundeb: FUNDEB
+  impressao: Servico de Impressao
+  ipmet: IPMET
+  lab: Laboratorio
+  ldc: Laboratorio Didatico Computacional
+  lepec: Laboratorio de Ensino, Pesquisa e Extensao em Computacao
+  proex: Pró-Reitoria de Extensão Universitária
+  prof: Professor
+  prof: Professora
+  prograd: Pró-reitoria de Graduação
+  prope: Pró-reitoria de Pesquisa
+  psico: Psicologia
+  reserva: Reserva de espacos academicos
+  rh: Recursos Humanos / Seção Técnica de Gestão de Pessoas
+  saad: Secao de Apoio Administrativo
+  sta: Seção Técnica Acadêmica
+  stf: Seção Técnica de Finanças
+  stg: Seção Técnica de Graduação
+  stm: Seção Técnica de Materiais
+  stpg: Secao Tecnica de Pos-Graduacao
+  voip: Telefonia VoIP
+  
+  

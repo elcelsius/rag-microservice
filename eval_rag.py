@@ -1,167 +1,289 @@
+
 #!/usr/bin/env python
 # eval_rag.py
 # Script abrangente para avaliação de sistemas RAG, combinando métricas de recuperação e de geração.
 
-import os
+from __future__ import annotations
+
+import argparse
+import asyncio
 import json
 import math
+import os
+import re
+import unicodedata
 import sys
-import asyncio
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Dict, List, Tuple, Any
 from urllib.request import Request, urlopen
 
 import pandas as pd
 from datasets import Dataset
 
 # --- Configuração da Avaliação ---
-# A URL da API agora aponta para o endpoint do agente e é mais facilmente configurável.
-API_URL = os.getenv("API_URL", "http://localhost:5000/agent/ask")
-# O LLM usado para a avaliação com RAGAs deve ser configurado.
-# Por padrão, usa o mesmo modelo que a aplicação para consistência.
+API_AGENT_DEFAULT = os.getenv("API_URL", "http://localhost:5000/agent/ask")
+API_QUERY_DEFAULT = os.getenv("LEGACY_API_URL", "http://localhost:5000/query")
 EVAL_LLM_MODEL = os.getenv("GOOGLE_MODEL", "gemini-1.5-flash-latest")
+DEFAULT_DATASET = Path("evaluation_dataset.jsonl")
+
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8")
+
+
 
 # --- Métricas de Recuperação (Retrieval) ---
-# As funções para calcular Recall@k, MRR@k e nDCG@k permanecem, pois são valiosas.
 
-def dcg_at_k(rels, k):
+def dcg_at_k(rels: List[int], k: int) -> float:
     """Calcula o Discounted Cumulative Gain."""
     return sum((rel / math.log2(i + 2)) for i, rel in enumerate(rels[:k]))
 
-def ndcg_at_k(golds: list, preds_texts: list, k: int) -> float:
+
+def ndcg_at_k(golds: List[str], preds_texts: List[str], k: int) -> float:
     """Calcula o Normalized Discounted Cumulative Gain @ k."""
     rels = [1 if any(gold.lower() in pred.lower() for gold in golds) else 0 for pred in preds_texts]
     ideal_rels = sorted([rel for rel in rels if rel > 0], reverse=True)
     return dcg_at_k(rels, k) / (dcg_at_k(ideal_rels, k) or 1.0)
 
-def mrr_at_k(golds: list, preds_texts: list, k: int) -> float:
+
+def mrr_at_k(golds: List[str], preds_texts: List[str], k: int) -> float:
     """Calcula o Mean Reciprocal Rank @ k."""
     for i, pred in enumerate(preds_texts[:k]):
         if any(gold.lower() in pred.lower() for gold in golds):
             return 1.0 / (i + 1)
     return 0.0
 
-def recall_at_k(golds: list, preds_texts: list, k: int) -> float:
+
+def recall_at_k(golds: List[str], preds_texts: List[str], k: int) -> float:
     """Calcula o Recall @ k."""
     return 1.0 if any(gold.lower() in pred.lower() for pred in preds_texts[:k] for gold in golds) else 0.0
 
-# --- Função de Chamada à API ---
 
-def query_agent_api(question: str) -> dict:
-    """Chama o endpoint do agente e retorna a resposta JSON."""
+# --- Helpers de CLI e Dataset ---
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Avaliação do RAG Microservice")
+    parser.add_argument("dataset", nargs="?", help="Caminho do dataset (CSV ou JSONL).")
+    parser.add_argument("--agent-url", default=API_AGENT_DEFAULT, help="Endpoint do agente (default: %(default)s)")
+    parser.add_argument("--query-url", default=API_QUERY_DEFAULT, help="Endpoint legado /query (default: %(default)s)")
+    parser.add_argument("--compare", action="store_true", help="Compara agente e endpoint legado na mesma execução.")
+    parser.add_argument("--output-dir", default="reports", help="Diretório para salvar o relatório em JSON.")
+    parser.add_argument("--label", default="", help="Rótulo opcional para compor o nome do arquivo de saída.")
+    return parser.parse_args()
+
+
+def resolve_dataset_path(arg_path: str | None) -> Path:
+    if arg_path:
+        path = Path(arg_path)
+        if not path.exists():
+            raise SystemExit(f"Dataset não encontrado: {path}")
+        return path
+    if DEFAULT_DATASET.exists():
+        return DEFAULT_DATASET
+    raise SystemExit("Informe o dataset (CSV ou JSONL) ou crie 'evaluation_dataset.jsonl'.")
+
+
+def _ensure_list(value: Any) -> List[str]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return [str(v).strip() for v in value if str(v).strip()]
+    return [str(value).strip()]
+
+
+def load_dataset(dataset_path: Path) -> List[Dict[str, Any]]:
+    suffix = dataset_path.suffix.lower()
+    if suffix in {".csv"}:
+        df = pd.read_csv(dataset_path, encoding="utf-8")
+        df = df.rename(columns={"query": "question", "expected": "ground_truth"})
+        df["ground_truth"] = df["ground_truth"].apply(lambda x: [s.strip() for s in str(x).split("||")])
+        records = df.to_dict(orient="records")
+    elif suffix == ".jsonl":
+        records = []
+        for idx, raw_line in enumerate(dataset_path.read_text(encoding="utf-8").splitlines(), 1):
+            if not raw_line.strip():
+                continue
+            try:
+                payload = json.loads(raw_line)
+            except json.JSONDecodeError as exc:
+                raise SystemExit(f"Falha ao ler JSONL na linha {idx}: {exc}") from exc
+            records.append(payload)
+    elif suffix == ".json":
+        try:
+            payload = json.loads(dataset_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            raise SystemExit(f"Falha ao ler JSON: {exc}") from exc
+        if isinstance(payload, list):
+            records = payload
+        else:
+            raise SystemExit("O arquivo JSON deve conter uma lista de exemplos.")
+    else:
+        raise SystemExit(f"Formato de dataset não suportado: {dataset_path.suffix}")
+
+    normalized: List[Dict[str, Any]] = []
+    for item in records:
+        question = str(item.get("question", "")).strip()
+        if not question:
+            continue
+        ground_truth = _ensure_list(item.get("ground_truth"))
+        normalized.append({
+            "question": question,
+            "ground_truth": ground_truth,
+        })
+    if not normalized:
+        raise SystemExit("Dataset vazio após normalização.")
+    return normalized
+
+
+# --- Funções de chamada à API ---
+
+def query_api(url: str, question: str) -> Dict[str, Any]:
     headers = {"Content-Type": "application/json"}
     data = json.dumps({"question": question}).encode("utf-8")
-    req = Request(API_URL, data=data, headers=headers)
+    req = Request(url, data=data, headers=headers)
     try:
-        with urlopen(req, timeout=90) as r:
-            return json.loads(r.read().decode("utf-8"))
-    except Exception as e:
-        print(f"ERROR: Falha ao chamar a API para a pergunta '{question}': {e}", file=sys.stderr)
+        with urlopen(req, timeout=90) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except Exception as exc:
+        print(f"ERROR: Falha ao chamar a API '{url}' para a pergunta '{question[:80]}...': {exc}")
         return {}
 
-# --- Função Principal de Avaliação ---
 
-async def main(csv_path: str):
-    """Orquestra o processo de avaliação de ponta a ponta."""
-    print(f"INFO: Iniciando avaliação com o arquivo: {csv_path}")
-    print(f"INFO: API de destino: {API_URL}")
+# --- Avaliação principal ---
 
-    # 1. Carregar o conjunto de dados de ground truth
-    try:
-        df = pd.read_csv(csv_path, encoding="utf-8")
-        # Renomeia colunas para o padrão esperado pelo RAGAs
-        df = df.rename(columns={"query": "question", "expected": "ground_truth"})
-        # A coluna 'ground_truth' pode conter múltiplos snippets esperados, separados por ||
-        df["ground_truth"] = df["ground_truth"].apply(lambda x: [s.strip() for s in x.split("||")])
-    except Exception as e:
-        print(f"CRITICAL: Falha ao carregar ou processar o arquivo CSV de avaliação: {e}", file=sys.stderr)
-        sys.exit(1)
+def _normalize_text(value: str) -> str:
+    if not value:
+        return ""
+    return unicodedata.normalize('NFKD', value).encode('ascii', 'ignore').decode('ascii').lower()
 
-    # 2. Executar as consultas na API e coletar os resultados
-    results = []
-    for _, row in df.iterrows():
-        question = row["question"]
+
+def _compute_retrieval_metrics(results_dataset: Dataset) -> Dict[str, float]:
+    metrics = {"recall@5": [], "mrr@10": [], "ndcg@5": []}
+    for item in results_dataset:
+        golds_raw = item["ground_truth"]
+        preds_raw = item["contexts"]
+        golds = [_normalize_text(g) for g in golds_raw]
+        preds = [_normalize_text(p) for p in preds_raw]
+        metrics["recall@5"].append(recall_at_k(golds, preds, k=5))
+        metrics["mrr@10"].append(mrr_at_k(golds, preds, k=10))
+        metrics["ndcg@5"].append(ndcg_at_k(golds, preds, k=5))
+    return {
+        key: round(sum(values) / len(values), 4) if values else 0.0
+        for key, values in metrics.items()
+    }
+
+
+async def evaluate_endpoint(dataset_records: List[Dict[str, Any]], url: str, label: str) -> Dict[str, Any]:
+    print(f"\nINFO: Avaliando endpoint '{label}' -> {url}")
+    results: List[Dict[str, Any]] = []
+    for entry in dataset_records:
+        question = entry["question"]
         print(f"INFO: Processando pergunta: '{question[:80]}...'")
-        api_response = query_agent_api(question)
-        
-        # Extrai a resposta e os contextos (citações)
+        api_response = query_api(url, question)
         answer = api_response.get("answer", "")
-        contexts = [cit["preview"] for cit in api_response.get("citations", [])]
-        
+        contexts = [cit.get("preview", "") for cit in api_response.get("citations", []) if isinstance(cit, dict)]
         results.append({
             "question": question,
             "answer": answer,
             "contexts": contexts,
-            "ground_truth": row["ground_truth"],
+            "ground_truth": entry["ground_truth"],
         })
-    
-    # Converte os resultados para um Dataset do Hugging Face
+
     results_dataset = Dataset.from_list(results)
-    print(f"SUCCESS: {len(results_dataset)} perguntas foram processadas.")
+    retrieval_metrics = _compute_retrieval_metrics(results_dataset)
 
-    # 3. Calcular Métricas de Recuperação (Retrieval)
-    print("\nINFO: Calculando métricas de recuperação (Retrieval)...\n")
-    retrieval_metrics = {
-        "recall@5": [],
-        "mrr@10": [],
-        "ndcg@5": [],
-    }
-    for item in results_dataset:
-        golds = item["ground_truth"]
-        preds = item["contexts"]
-        retrieval_metrics["recall@5"].append(recall_at_k(golds, preds, k=5))
-        retrieval_metrics["mrr@10"].append(mrr_at_k(golds, preds, k=10))
-        retrieval_metrics["ndcg@5"].append(ndcg_at_k(golds, preds, k=5))
-
-    avg_retrieval_metrics = {
-        k: round(sum(v) / len(v), 4) if v else 0.0
-        for k, v in retrieval_metrics.items()
-    }
-
-    # 4. Calcular Métricas de Geração com RAGAs
-    print("\nINFO: Calculando métricas de geração (RAGAs)...\n")
+    print("INFO: Calculando metricas de geracao (RAGAs)...")
+    avg_generation_metrics: Dict[str, float] = {}
+    ragas_available = True
     try:
-        from ragas import evaluate
-        from ragas.metrics import faithfulness, answer_relevancy
-        from langchain_google_genai import ChatGoogleGenerativeAI
+        from ragas import evaluate  # type: ignore
+        from ragas.metrics import faithfulness, answer_relevancy  # type: ignore
+        from langchain_google_genai import ChatGoogleGenerativeAI  # type: ignore
 
-        # Configura o LLM que o RAGAs usará para julgar as respostas
         ragas_llm = ChatGoogleGenerativeAI(model=EVAL_LLM_MODEL, temperature=0.0)
-
         generation_metrics = [faithfulness, answer_relevancy]
-        
-        # Executa a avaliação do RAGAs
         ragas_result = await evaluate(
             dataset=results_dataset,
             metrics=generation_metrics,
             llm=ragas_llm,
-            raise_exceptions=False # Continua a avaliação mesmo que uma linha falhe
+            raise_exceptions=False,
         )
         ragas_scores = ragas_result.scores.to_dict()
         avg_generation_metrics = {
-            k: round(sum(v) / len(v), 4) if v else 0.0
-            for k, v in ragas_scores.items()
+            key: round(sum(values) / len(values), 4) if values else 0.0
+            for key, values in ragas_scores.items()
         }
     except ImportError:
-        print("WARN: Biblioteca 'ragas' não instalada. Pulando métricas de geração.", file=sys.stderr)
-        avg_generation_metrics = {}
-    except Exception as e:
-        print(f"ERROR: Falha ao executar a avaliação com RAGAs: {e}", file=sys.stderr)
-        avg_generation_metrics = {}
+        ragas_available = False
+        print("WARN: Biblioteca ragas ou dependencias nao instaladas. Pulando metricas de geracao.")
+    except Exception as exc:
+        ragas_available = False
+        print(f"ERROR: Falha ao executar avaliacao com RAGAs: {exc}")
 
-    # 5. Apresentar o relatório final
-    final_report = {
+    return {
+        "endpoint": url,
         "dataset_size": len(results_dataset),
-        "retrieval_metrics": avg_retrieval_metrics,
+        "retrieval_metrics": retrieval_metrics,
         "generation_metrics_ragas": avg_generation_metrics,
+        "ragas_available": ragas_available,
     }
 
-    print("\n--- RELATÓRIO FINAL DE AVALIAÇÃO ---")
-    print(json.dumps(final_report, indent=2, ensure_ascii=False))
 
+def _sanitize_label(label: str, default: str) -> str:
+    clean = re.sub(r"[^a-zA-Z0-9_-]+", "-", label).strip("-")
+    return clean or default
+
+
+async def run_evaluation(args: argparse.Namespace) -> Dict[str, Any]:
+    dataset_path = resolve_dataset_path(args.dataset)
+    dataset_records = load_dataset(dataset_path)
+
+    targets = {"agent": args.agent_url}
+    if args.compare:
+        targets["legacy"] = args.query_url
+
+    results: Dict[str, Any] = {}
+    for label, url in targets.items():
+        results[label] = await evaluate_endpoint(dataset_records, url, label)
+
+    timestamp = datetime.now(timezone.utc)
+    final_report = {
+        "dataset_path": str(dataset_path.resolve()),
+        "dataset_size": len(dataset_records),
+        "generated_at": timestamp.isoformat(),
+        "targets": results,
+    }
+
+    output_dir = Path(args.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    base_label = args.label or ("compare" if len(results) > 1 else next(iter(results)))
+    file_label = _sanitize_label(base_label, "report")
+    outfile = output_dir / f"eval-report-{file_label}-{timestamp.strftime('%Y%m%d-%H%M%S')}.json"
+    outfile.write_text(json.dumps(final_report, indent=2, ensure_ascii=False), encoding="utf-8")
+    print(f"\nSUCCESS: Relatorio salvo em {outfile}")
+
+    return final_report
+
+
+def print_summary(report: Dict[str, Any]) -> None:
+    print("\n--- RESUMO FINAL ---")
+    print(f"Dataset: {report['dataset_path']} ({report['dataset_size']} itens)")
+    for label, data in report["targets"].items():
+        print(f"\n[{label}] -> {data['endpoint']}")
+        print("  Metricas de Recuperacao:")
+        for key, value in data["retrieval_metrics"].items():
+            print(f"    {key}: {value}")
+        metrics = data.get("generation_metrics_ragas") or {}
+        if data.get("ragas_available") and metrics:
+            print("  Metricas de Geracao (RAGAs):")
+            for key, value in metrics.items():
+                print(f"    {key}: {value}")
+        else:
+            print("  Metricas de Geracao (RAGAs): indisponiveis")
 
 if __name__ == "__main__":
-    if len(sys.argv) < 2:
-        print(f"Uso: python {sys.argv[0]} <caminho_para_o_csv_de_avaliacao>", file=sys.stderr)
-        print("Exemplo: python eval_rag.py tests/eval_sample.csv", file=sys.stderr)
-        sys.exit(1)
-    # O RAGAs usa asyncio, então a função main é executada em um loop de eventos.
-    asyncio.run(main(sys.argv[1]))
+    cli_args = parse_args()
+    report = asyncio.run(run_evaluation(cli_args))
+    print_summary(report)
