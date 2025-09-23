@@ -28,10 +28,14 @@ langchain-community==0.2.10
 langchain-core==0.2.43
 # Algoritmos para dividir textos longos em pedaços menores (chunks).
 langchain-text-splitters==0.2.4
+# Integração do LangChain com os modelos do Google Gemini.
+langchain-google-genai==1.0.7
+# NOVA: Integração do LangChain com modelos do HuggingFace (substitui a antiga).
+langchain-huggingface==0.0.3
 
 # --- Modelos de Embeddings (Hugging Face) ---
 # Framework para trabalhar com modelos de embeddings e transformers.
-sentence-transformers==2.2.2
+sentence-transformers==2.7.0
 # Hub para baixar modelos e datasets do Hugging Face.
 huggingface-hub==0.24.6
 # Biblioteca principal do Hugging Face para modelos de NLP.
@@ -62,3 +66,9 @@ nltk==3.9.1
 google-generativeai>=0.7.2,<0.8
 
 einops>=0.7
+
+# --- Avaliação de RAG ---
+# Framework para avaliação de pipelines de RAG
+ragas==0.1.9
+# Patch para permitir que asyncio rode dentro de um ambiente síncrono.
+nest-asyncio==1.6.0

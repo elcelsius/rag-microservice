@@ -13,6 +13,7 @@ Este projeto implementa um microserviço **RAG** (Retrieval-Augmented Generation
 - [Executando o ETL (build do índice)](#executando-o-etl-build-do-índice)
 - [Subindo a API](#subindo-a-api)
 - [Consultas & Debug](#consultas--debug)
+- [Avaliação de Qualidade (RAGAs)](#avaliação-de-qualidade-ragas)
 - [Como funcionam os "pesos" e a confiança](#como-funcionam-os-pesos-e-a-confiança)
 - [Boas práticas & Troubleshooting](#boas-práticas--troubleshooting)
 
@@ -181,6 +182,41 @@ Campos úteis no `debug`:
 - `rerank.enabled`: se o CrossEncoder carregou
 - `rerank.scored[*].score`: score **0–1** do CrossEncoder (comanda a ordenação final)
 - `confidence`: máximo dos scores do reranker (após normalização, se aplicável)
+
+---
+
+## Avaliação de Qualidade (RAGAs)
+
+Para garantir a qualidade e a precisão das respostas, o projeto inclui um framework de avaliação automatizado usando a biblioteca `ragas`. Isso permite medir o impacto de qualquer alteração (nos prompts, na lógica de busca, etc.) de forma objetiva.
+
+### 1. Preparando o Dataset de Avaliação
+
+Crie ou edite o arquivo `evaluation_dataset.jsonl` na raiz do projeto. Cada linha é um JSON que representa um teste, contendo:
+
+-   `question`: A pergunta a ser testada.
+-   `ground_truth`: A resposta "perfeita" e factual que se espera.
+-   `contexts`: Uma lista com os trechos de texto exatos que o RAG deveria recuperar para responder à pergunta.
+
+**Exemplo:**
+
+```json
+{"question": "Qual o e-mail da STAEPE?", "ground_truth": "O e-mail da STAEPE é staepe.fc@unesp.br.", "contexts": ["A STAEPE (Seção Técnica de Apoio ao Ensino, Pesquisa e Extensão) atende no e-mail staepe.fc@unesp.br e no telefone (14) 3103-6133."]}
+```
+
+### 2. Executando a Avaliação
+
+Com a API do RAG rodando, execute o seguinte comando em seu terminal:
+
+```bash
+python tools/evaluate.py
+```
+
+O script irá processar cada pergunta do dataset, chamar a API e, ao final, imprimir um relatório com as seguintes métricas:
+
+-   **faithfulness**: Mede se a resposta se baseia estritamente no contexto, sem "alucinações".
+-   **answer_relevancy**: Mede o quão relevante a resposta é para a pergunta.
+-   **context_recall**: Mede se o sistema conseguiu encontrar todo o contexto necessário.
+-   **context_precision**: Mede se o contexto recuperado é limpo e relevante, sem "ruído".
 
 ---
 
