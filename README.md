@@ -1,131 +1,181 @@
-# RAG Assist (UFEX) — README
+# Microsserviço RAG com Agente LangGraph
 
-> Sistema de pergunta–resposta (RAG) com **rota lexical**, **rota vetorial** (FAISS + CrossEncoder) e modo **híbrido**. Inclui telemetria JSONL e parâmetros ajustáveis por `.env`.
+Este projeto implementa um sistema de Pergunta-Resposta (Question-Answering) baseado em RAG (Retrieval-Augmented Generation), orquestrado por um agente inteligente construído com LangGraph. A solução é conteinerizada com Docker e projetada para ser modular, robusta e avaliável.
 
 ## Sumário
 - [Arquitetura](#arquitetura)
-- [Como rodar](#como-rodar)
-- [Variáveis de ambiente](#variáveis-de-ambiente)
-- [Como os “pesos” funcionam](#como-os-pesos-funcionam)
-- [Telemetria](#telemetria)
-- [Dicas e troubleshooting](#dicas-e-troubleshooting)
+- [Como Executar (Docker)](#como-executar-docker)
+- [Endpoints da API](#endpoints-da-api)
+- [Avaliação do Sistema](#avaliação-do-sistema)
+- [Executando os Testes](#executando-os-testes)
+- [Estrutura do Projeto](#estrutura-do-projeto)
+- [Variáveis de Ambiente](#variáveis-de-ambiente)
 
 ---
 
 ## Arquitetura
 
+O sistema combina duas lógicas principais: um pipeline de RAG direto e um fluxo de agente mais sofisticado que o orquestra.
+
+### 1. Fluxo do Agente (LangGraph)
+
+O agente decide a melhor forma de responder a uma pergunta, podendo pedir mais informações ou acionar o pipeline de RAG.
+
 ```mermaid
 flowchart TD
-    Q[Usuário pergunta] -->|normaliza| NQ[Normalização & sinais]
-    NQ -->|candidatos léxicos| LEX[Matcher de sentenças (fuzzy)]
-    NQ --> MQ[Multi-Query]
-    MQ -->|q1..qn| FAISS[(FAISS)]
-    LEX -. opcional/híbrido .-> MERGE
-    FAISS --> MERGE[Merge + Dedup + Cap por fonte]
-    MERGE --> RERANK[CrossEncoder (rerank)]
-    RERANK --> CTX[Seleção de contexto]
-    CTX --> LLM[LLM - resposta final]
-    LLM --> OUT[Markdown + Citações]
-    OUT --> LOG[telemetry.jsonl]
+    A[Pergunta do Usuário] --> B{Nó de Triagem};
+    B -- "Precisa de mais infos" --> C[Nó de Pedir Informação];
+    B -- "Pode ser respondida" --> D{Nó Auto-Resolver};
+    C --> F[Fim do Fluxo];
+    D --> E{RAG foi bem-sucedido?};
+    E -- Sim --> F;
+    E -- Não --> C;
 ```
 
-- **LEX**: varre sentenças por _partial ratio_ / nomes aproximados. Usa `LEXICAL_THRESHOLD` e soma `DEPT_BONUS` quando a _source_ bate o departamento.
-- **FAISS**: busca vetorial com _multi-query_.
-- **Híbrido**: se `HYBRID_ENABLED=true`, une candidatos **lexicais + vetoriais** antes do **CrossEncoder**, com **cap por fonte** (`MAX_PER_SOURCE`).
-- **Rerank**: CrossEncoder (ex.: `jinaai/jina-reranker-v2-base-multilingual`) decide a ordem final.
-- **LLM**: sintetiza a resposta e formata em Markdown com citações.
+### 2. Pipeline de RAG (Retrieval-Augmented Generation)
 
----
+Este é o núcleo da busca e geração de respostas, acionado pelo agente.
 
-## Como rodar
-
-1. **ETL**: gere/atualize o índice FAISS (garanta o mesmo modelo de embeddings na API e no ETL).
-2. **API**: exporte as variáveis do `.env` e inicie o serviço.
-3. Faça uma requisição `POST /query` com `{"question": "...", "debug": true}` para inspecionar `debug`.
-
-> Pré-requisitos: Python 3.10+, `langchain_community`, `sentence_transformers` (opcional, para o rerank), `PyYAML`, `rapidfuzz`.
-
----
-
-## Variáveis de ambiente
-
-Essenciais:
-```
-EMBEDDINGS_MODEL=intfloat/multilingual-e5-large
-CONFIDENCE_MIN=0.32
-STRUCTURED_ANSWER=true
-REQUIRE_CONTEXT=true
-```
-
-Lexical & híbrido:
-```
-HYBRID_ENABLED=true           # merge lexical+vetorial antes do rerank
-LEXICAL_THRESHOLD=86          # corte para aceitar uma sentença lexical
-DEPT_BONUS=8                  # bônus por “source” compatível com depto
-MAX_PER_SOURCE=2              # diversidade no merge
-```
-
-Rerank:
-```
-RERANKER_ENABLED=true
-RERANKER_NAME=jinaai/jina-reranker-v2-base-multilingual
-RERANKER_CANDIDATES=30
-RERANKER_TOP_K=5
-RERANKER_MAX_LEN=512
-RERANKER_DEVICE=cpu
-```
-
-Telemetria:
-```
-LOG_DIR=./logs
-DEBUG_LOG=true
-DEBUG_PAYLOAD=true
+```mermaid
+flowchart TD
+    Q[Pergunta Autônoma] --> MQ[Multi-Query];
+    MQ -->|q1..qn| FAISS[(Busca Vetorial FAISS)];
+    FAISS --> RERANK[CrossEncoder (Rerank)];
+    RERANK --> CTX[Seleção de Contexto];
+    CTX --> LLM[LLM - Geração da Resposta Final];
+    LLM --> OUT[Markdown + Citações];
 ```
 
 ---
 
-## Como os “pesos” funcionam
+## Como Executar (Docker)
 
-### 1) Peso **lexical**
-- Cada sentença candidata recebe um escore `best` (0–100) por:
-  - _match_ aproximado de nomes (Levenshtein),
-  - `partial_ratio` da pergunta na sentença.
-- A sentença só “entra no jogo” se `best >= LEXICAL_THRESHOLD`.
-- Se a _source_ do documento aparenta o mesmo **departamento** da pergunta, soma-se `DEPT_BONUS` ao melhor escore do documento.
-- Quando o **modo híbrido** está **desligado**, a rota lexical pode responder **sozinha** (retorno antecipado).
-- Quando o **modo híbrido** está **ligado**, as passagens lexicais **não retornam sozinhas**: elas são **fundidas** com as vetoriais e seguem para o **reranker**.
+A maneira mais simples e recomendada de executar o projeto é usando o Docker Compose.
 
-### 2) Peso **vetorial + reranker**
-- O FAISS traz top-K por similaridade de embeddings (não supervisionado).
-- O **CrossEncoder** (supervisionado) reavalia **cada (pergunta, trecho)** e gera um **score 0..1**.  
-  Este **score do CrossEncoder** é o “peso” final que decide a ordem e a confiança (`conf = max(score)`).
-- Em modo **híbrido**, os trechos **lexicais** também passam pelo CrossEncoder. Assim, palavras/termos que “ajudam” de verdade **ganham peso** no **score supervisionado** do rerank.
+### 1. Pré-requisitos
+- Docker e Docker Compose instalados.
+- Uma chave de API do Google Gemini (obtenha em [Google AI Studio](https://aistudio.google.com/app/apikey)).
+
+### 2. Configuração
+
+Copie o arquivo de exemplo `.env.example` para um novo arquivo chamado `.env`.
+
+```bash
+cp .env.example .env
+```
+
+Abra o arquivo `.env` e **insira sua chave de API do Google** na variável `GOOGLE_API_KEY`.
+
+### 3. Execução
+
+Escolha o ambiente (CPU ou GPU) e execute o comando correspondente na raiz do projeto.
+
+**Para ambiente com CPU:**
+```bash
+docker-compose -f docker-compose.cpu.yml up --build
+```
+
+**Para ambiente com GPU (requer NVIDIA Container Toolkit):**
+```bash
+docker-compose -f docker-compose.gpu.yml up --build
+```
+
+O primeiro build pode demorar alguns minutos. Após a inicialização, os seguintes serviços estarão disponíveis:
+- **API do RAG:** `http://localhost:5000`
+- **Interface Web (UI):** `http://localhost:8080`
+- **Banco de Dados (Postgres):** `localhost:5432`
 
 ---
 
-## Telemetria
+## Endpoints da API
 
-Arquivo: `LOG_DIR/queries.log` (JSONL).  
-Campos úteis:
-- `question`, `route` (`lexical|vector|hybrid`), `confidence` (0..1),  
-- `timing_ms` (`retrieval`, `reranker`, `llm`, `total`),  
-- `mq_variants`, `faiss_top` (amostra de candidatos), `ctx_docs`.
+### Endpoint Principal do Agente
 
-Basta importar e chamar:
-```python
-from telemetry import log_event
-log_event(os.getenv("LOG_DIR","./logs"), payload_dict)
+- **URL:** `POST /agent/ask`
+- **Descrição:** Processa uma pergunta usando o fluxo completo do agente LangGraph. Suporta histórico de conversa.
+- **Payload (JSON):**
+  ```json
+  {
+    "question": "Qual é o e-mail do departamento de biologia?",
+    "messages": [
+      {"role": "user", "content": "Qual o contato do depto de bio?"},
+      {"role": "assistant", "content": "Não encontrei um departamento com esse nome. Poderia especificar o nome completo?"}
+    ]
+  }
+  ```
+
+### Endpoint Legado (RAG Direto)
+
+- **URL:** `POST /query`
+- **Descrição:** Processa uma pergunta usando apenas o pipeline de RAG direto, sem a camada do agente.
+
+---
+
+## Avaliação do Sistema
+
+O projeto inclui um script de avaliação de ponta a ponta que utiliza a biblioteca `ragas`.
+
+1.  **Garanta que a API esteja em execução.**
+2.  Execute o script `eval_rag.py`, passando o caminho para um arquivo CSV com os dados de teste.
+
+```bash
+# Exemplo de execução
+python eval_rag.py tests/eval_sample.csv
+```
+
+O script irá calcular e exibir métricas de **Recuperação** (Recall, MRR, nDCG) e de **Geração** (Faithfulness, Answer Relevancy).
+
+---
+
+## Executando os Testes
+
+O projeto utiliza `pytest` para testes automatizados. Para executar a suíte de testes:
+
+1.  Instale as dependências correspondentes ao seu ambiente (fora do Docker elas precisam incluir FAISS e Torch):
+    ```bash
+    pip install -r requirements-cpu.txt  # ou requirements-gpu.txt se estiver com CUDA
+    ```
+2.  Execute o pytest na raiz do projeto:
+    ```bash
+    pytest -v
+    ```
+
+---
+
+## Estrutura do Projeto
+
+```
+. C:/Temp/Workspace/rag-microservice
+├── 📄 .env.example        # Exemplo de arquivo de configuração
+├── 📄 api.py              # Servidor Flask, expõe os endpoints da API
+├── 📄 agent_workflow.py   # Orquestra a lógica do agente com LangGraph
+├── 📄 query_handler.py    # Implementa a lógica central de RAG (busca e geração)
+├── 📄 llm_client.py       # Cliente unificado e robusto para interagir com LLMs
+├── 📄 etl_orchestrator.py # Pipeline de ETL para construir o índice vetorial
+├── 📄 eval_rag.py         # Script para avaliação de ponta-a-ponta do sistema
+├── 📄 telemetry.py        # Módulo de logging de telemetria
+├── 📁 loaders/           # Módulo unificado para carregar documentos de diferentes formatos
+├── 📁 prompts/           # Armazena os prompts usados pelo agente e pelo RAG
+├── 📁 data/              # Contém os documentos fonte para o ETL
+├── 📁 config/            # Arquivos de configuração adicionais (ex: ontologias)
+├── 📁 tests/             # Testes automatizados com pytest
+├── 🐳 Dockerfile.cpu      # Define a imagem Docker para ambiente CPU
+├── 🐳 Dockerfile.gpu      # Define a imagem Docker para ambiente GPU
+├── 🐳 docker-compose.cpu.yml  # Stack completa otimizada para CPU
+└── 🐳 docker-compose.gpu.yml  # Stack completa com suporte a GPU
 ```
 
 ---
 
-## Dicas e troubleshooting
+## Variáveis de Ambiente
 
-- **Confiança baixa**: ajuste `RERANKER_NAME`, `RERANKER_CANDIDATES` e `CONFIDENCE_MIN`.
-- **Muito “mais do mesmo”** nas fontes: diminua `MAX_PER_SOURCE` (ex.: `1`).
-- **Lexical muito sensível**: aumente `LEXICAL_THRESHOLD` (ex.: `90`).
-- **CrossEncoder pesado**: rode em `cuda` (`RERANKER_DEVICE=cuda`) ou desative (`RERANKER_ENABLED=false`).
+As principais variáveis de ambiente para configurar o comportamento do sistema estão no arquivo `.env`. Consulte o `.env.example` para uma lista completa e descrições detalhadas. Destaques:
 
----
+- **LLM**: `GOOGLE_API_KEY` e `GOOGLE_MODEL` (ex.: `models/gemini-2.5-flash-lite`).
+- **Embeddings/FAISS**: `EMBEDDINGS_MODEL` (ETL e API precisam usar o mesmo valor) e `FAISS_STORE_DIR`.
+- **Reranker**: `RERANKER_PRESET` (`off | fast | balanced | full`) e `RERANKER_ENABLED=true`. O preset `balanced` usa `jinaai/jina-reranker-v1-base-multilingual` (boa qualidade no CPU). Ajuste `RERANKER_CANDIDATES`, `RERANKER_TOP_K`, `RERANKER_MAX_LEN` conforme latência desejada.
+- **Busca híbrida**: `HYBRID_ENABLED` (default `true`), `LEXICAL_THRESHOLD` (default `90`), `DEPT_BONUS`, `MAX_PER_SOURCE`.
+- **Multi-query e confiança**: `MQ_ENABLED`, `MQ_VARIANTS`, `CONFIDENCE_MIN` e `REQUIRE_CONTEXT`.
+- **Formato da resposta**: `STRUCTURED_ANSWER` (markdown com resumo/fontes) e `MAX_SOURCES`.
 
-> Dúvidas? Abra o `debug:true` na requisição para ver os detalhes da rota, candidatos, tempos e _scores_.
+Caso queira forçar uma rota específica para debug, use `ROUTE_FORCE=lexical|vector`.

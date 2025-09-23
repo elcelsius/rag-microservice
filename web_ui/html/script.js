@@ -17,7 +17,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const typingIndicator = showTypingIndicator();
 
         try {
-            const response = await fetch('/query', {
+            const response = await fetch('/agent/ask', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ question })

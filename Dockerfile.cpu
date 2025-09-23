@@ -1,49 +1,62 @@
-# Estágio 1: Base
-# Define uma imagem base com Python 3.11. Ideal para manter a imagem final leve.
-FROM python:3.11-slim AS base
+# Dockerfile.cpu
+# Imagem multi-stage para construir e executar o microsserviço RAG em ambiente CPU.
 
-# Define o diretório de trabalho padrão dentro do container.
+FROM python:3.11-slim AS builder
+
 WORKDIR /app
 
-# Variáveis de ambiente para otimizar a execução do Python em containers.
-# PYTHONDONTWRITEBYTECODE=1: Impede o Python de gerar arquivos .pyc.
-# PYTHONUNBUFFERED=1: Garante que os logs do Python sejam enviados diretamente para o terminal.
-ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
-
-# Instala dependências do sistema operacional (Debian).
-# - build-essential: Compiladores C/C++ necessários para algumas libs Python.
-# - git, curl: Ferramentas de desenvolvimento.
-# - poppler-utils: Necessário para o processamento de PDFs (usado por pypdf).
-# - tesseract-ocr: Ferramenta de OCR (pode ser usada em pipelines mais complexos).
+# Dependências necessárias apenas em build-time.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential git curl poppler-utils tesseract-ocr \
+    build-essential git curl \
  && rm -rf /var/lib/apt/lists/*
 
-# Instala as dependências Python para o ambiente de CPU.
-# Copia primeiro os arquivos de requirements para aproveitar o cache do Docker.
-COPY requirements.txt /tmp/requirements.txt
-COPY requirements-cpu.txt /tmp/requirements-cpu.txt
-# Atualiza o pip e instala as bibliotecas listadas nos arquivos, sem cache.
-RUN python3 -m pip install --no-cache-dir --upgrade pip && \
-    pip3 install --no-cache-dir -r /tmp/requirements-cpu.txt
+# Cria um ambiente virtual isolado para reutilizar nas fases seguintes.
+ENV VENV_PATH=/opt/venv
+RUN python3 -m venv ${VENV_PATH}
+ENV PATH="${VENV_PATH}/bin:$PATH"
 
-# Copia todo o código da aplicação para o diretório de trabalho no container.
-COPY . /app
+COPY requirements.txt requirements-cpu.txt ./
+RUN pip install --no-cache-dir --upgrade pip \
+ && pip install --no-cache-dir -r requirements-cpu.txt
 
-# ===== Estágio 2: Imagem para o ETL =====
-# Cria uma imagem final a partir do estágio 'base', otimizada para o ETL.
-# Esta imagem conterá apenas o necessário para executar o script de ETL.
-FROM base AS etl
+#--------------------------------------------------------------
+# Camada de runtime compartilhada entre API e ETL
+FROM python:3.11-slim AS runtime
+
 WORKDIR /app
-# Comando padrão que será executado quando um container for iniciado a partir desta imagem.
-CMD ["bash", "-lc", "python3 -u scripts/etl_build_index.py"]
 
-# ===== Estágio 3: Imagem para a API =====
-# Cria a imagem final para a API, também a partir do estágio 'base'.
-FROM base AS ai_api
-WORKDIR /app
-# Expõe a porta 5000, onde a API Flask irá rodar.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    poppler-utils \
+ && rm -rf /var/lib/apt/lists/*
+
+ENV VENV_PATH=/opt/venv
+COPY --from=builder ${VENV_PATH} ${VENV_PATH}
+ENV PATH="${VENV_PATH}/bin:$PATH" \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+# Copia apenas os artefatos necessários para execução.
+COPY api.py ./
+COPY agent_workflow.py ./
+COPY llm_client.py ./
+COPY query_handler.py ./
+COPY telemetry.py ./
+COPY triage.py ./
+COPY etl_orchestrator.py ./
+COPY eval_rag.py ./
+COPY loaders ./loaders
+COPY prompts ./prompts
+COPY scripts ./scripts
+COPY tools ./tools
+COPY config ./config
+
+#--------------------------------------------------------------
+# Imagem para ETL (rebuild/update de índice)
+FROM runtime AS etl
+CMD ["python3", "-u", "etl_orchestrator.py"]
+
+#--------------------------------------------------------------
+# Imagem para API Flask
+FROM runtime AS ai_api
 EXPOSE 5000
-# Comando padrão para iniciar a API.
 CMD ["python3", "-u", "api.py"]

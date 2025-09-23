@@ -1,44 +1,39 @@
 services:
+  # Serviço do Banco de Dados PostgreSQL
   ai_postgres:
     image: postgres:15-alpine
     container_name: ai_postgres
+    # As credenciais agora são lidas do arquivo .env, tornando a configuração segura.
     environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: ragdb
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
     volumes:
       - pgdata:/var/lib/postgresql/data
     ports:
-      - "5432:5432"
+      - "${POSTGRES_PORT:-5432}:5432"
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d ragdb"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
       interval: 10s
       timeout: 5s
       retries: 20
       start_period: 20s
     restart: unless-stopped
 
+  # Serviço de ETL (Extract, Transform, Load)
   ai_etl:
     build:
       context: .
       dockerfile: Dockerfile.gpu
-      # target: etl   # <-- deixe comentado se não houver estágio "AS etl"
+      # Especifica o estágio 'etl' do Dockerfile como a imagem final.
+      target: etl
     container_name: ai_etl
+    # Carrega a configuração padrão do arquivo .env.
+    env_file: .env
     environment:
-      CUDA_VISIBLE_DEVICES: ""   # <— força CPU no ETL
-      DATABASE_URL: "postgresql://postgres:postgres@ai_postgres:5432/ragdb"
-      DATA_DIR: "/app/data"
-      FAISS_OUT_DIR: "/app/vector_store/faiss_index"
-      EMBEDDINGS_MODEL: "${EMBEDDINGS_MODEL:-intfloat/multilingual-e5-large}"
-      RERANKER_ENABLED: "${RERANKER_ENABLED:-true}"
-      RERANKER_NAME: "${RERANKER_NAME:-jinaai/jina-reranker-v2-base-multilingual}"
-      RERANKER_CANDIDATES: "${RERANKER_CANDIDATES:-30}"
-      RERANKER_TOP_K: "${RERANKER_TOP_K:-5}"
-      RERANKER_MAX_LEN: "${RERANKER_MAX_LEN:-4096}"
-      MQ_ENABLED: "${MQ_ENABLED:-true}"
-      MQ_VARIANTS: "${MQ_VARIANTS:-3}"
-      CONFIDENCE_MIN: "${CONFIDENCE_MIN:-0.32}"
-      REQUIRE_CONTEXT: "${REQUIRE_CONTEXT:-true}"
+      # Força o uso de CPU para o ETL, mesmo em um ambiente com GPU, para economizar recursos.
+      CUDA_VISIBLE_DEVICES: ""
+      DATABASE_URL: "postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@ai_postgres:5432/${POSTGRES_DB}"
     depends_on:
       ai_postgres:
         condition: service_healthy
@@ -46,44 +41,28 @@ services:
       - ./data:/app/data:ro
       - vector_store:/app/vector_store
       - ./config:/app/config:ro
-    working_dir: /app
-    command: ["bash", "-lc", "python3 -u scripts/etl_build_index.py && echo 'ETL done'"]
+    # Comando simplificado para executar o script de ETL.
+    command: ["python3", "-u", "etl_orchestrator.py"]
     restart: "no"
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
 
+  # Serviço da API principal (com suporte a GPU)
   ai_projeto_api:
     build:
       context: .
       dockerfile: Dockerfile.gpu
-      # target: ai_api  # <-- deixe comentado se não houver estágio "AS ai_api"
+      # Especifica o estágio 'ai_api' do Dockerfile como a imagem final.
+      target: ai_api
     container_name: ai_projeto_api
+    env_file: .env
     environment:
+      DATABASE_URL: "postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@ai_postgres:5432/${POSTGRES_DB}"
       FAISS_STORE_DIR: "/app/vector_store/faiss_index"
-      EMBEDDINGS_MODEL: "${EMBEDDINGS_MODEL:-intfloat/multilingual-e5-large}"
-      GOOGLE_API_KEY: "${GOOGLE_API_KEY:-}"
-      GOOGLE_MODEL:   "${GOOGLE_MODEL:-gemini-2.5-flash-lite}"
-      REQUIRE_LLM_READY: "${REQUIRE_LLM_READY:-false}"
-      RERANKER_ENABLED: "${RERANKER_ENABLED:-true}"
-      RERANKER_NAME: "${RERANKER_NAME:-jinaai/jina-reranker-v2-base-multilingual}"
-      RERANKER_TOP_K: "${RERANKER_TOP_K:-5}"
-      STRUCTURED_ANSWER: "${STRUCTURED_ANSWER:-true}"
-      RERANKER_MAX_LEN: "${RERANKER_MAX_LEN:-512}"
-      MAX_SOURCES: "${MAX_SOURCES:-5}"
-      DEBUG_LOG: "${DEBUG_LOG:-true}"         # logar no stdout
-      DEBUG_PAYLOAD: "${DEBUG_PAYLOAD:-true}" # incluir "debug" na resposta quando ?debug=true
     depends_on:
       ai_etl:
         condition: service_completed_successfully
     volumes:
-      - vector_store:/app/vector_store
+      - vector_store:/app/vector_store:ro
       - ./prompts:/app/prompts:ro
-      - ./data:/app/data:ro
       - ./config:/app/config:ro
     ports:
       - "5000:5000"
@@ -92,6 +71,9 @@ services:
       interval: 10s
       timeout: 5s
       retries: 20
+      start_period: 30s
+    restart: unless-stopped
+    # Mapeia os recursos de GPU do host para o container.
     deploy:
       resources:
         reservations:
@@ -100,6 +82,7 @@ services:
               count: all
               capabilities: [gpu]
 
+  # Serviço da Interface Web (UI)
   ai_web_ui:
     image: nginx:1.27-alpine
     container_name: ai_web_ui
@@ -113,6 +96,7 @@ services:
       - ./web_ui/conf.d:/etc/nginx/conf.d:ro
     restart: unless-stopped
 
+# Declaração dos volumes nomeados para persistência de dados.
 volumes:
   pgdata:
   vector_store:

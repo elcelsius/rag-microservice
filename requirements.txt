@@ -28,6 +28,7 @@ langchain-community==0.2.10
 langchain-core==0.2.43
 # Algoritmos para dividir textos longos em pedaços menores (chunks).
 langchain-text-splitters==0.2.4
+langgraph==0.1.19
 
 # --- Modelos de Embeddings (Hugging Face) ---
 # Framework para trabalhar com modelos de embeddings e transformers.
@@ -62,3 +63,16 @@ nltk==3.9.1
 google-generativeai>=0.7.2,<0.8
 
 einops>=0.7
+
+# --- Avaliação ---
+# Framework para avaliação de sistemas RAG.
+ragas==0.1.7
+# Biblioteca para análise e manipulação de dados, usada na avaliação e nos loaders.
+pandas==2.2.2
+
+# --- Testes ---
+# Framework de testes para Python.
+pytest==8.2.2
+# Utilitário para mocking em testes.
+pytest-mock==3.14.0
+psycopg2-binary==2.9.9

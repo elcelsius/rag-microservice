@@ -6,7 +6,8 @@ flowchart LR
       U[Usuário]
     end
     subgraph API
-      A[Flask API<br/>/query]
+      A[Flask API<br/>/agent/ask]
+      L[Endpoint legado<br/>/query]
       H[Health/Metrics]
     end
     subgraph Retrieval
@@ -33,16 +34,21 @@ flowchart LR
       PD[Pedir Info]
     end
 
-    U -->|Pergunta| A
-    A -->|triagem opcional| TRI
+    U -->|Pergunta (agente)| A
+    U -->|Pergunta (legado)| L
+    A -->|triagem LangGraph| TRI
     TRI -->|ação| TG
     TG -->|AUTO_RESOLVER| AR
     TG -->|PEDIR_INFO| PD
+
+    L -->|bypass agente| LEX
+    L -->|bypass agente| MQ
 
     AR -->|Rota 1| LEX
     LEX -->|se encontrou| GEN
     AR -->|Rota 2| MQ --> VS --> RER --> GEN
     GEN -->|Resposta + Citações + Confiança| A
+    GEN -->|Resposta legado| L
 
     H --- A
 
@@ -54,11 +60,12 @@ flowchart LR
     %% Embeddings em runtime
     A --- EMB
     A --- VS
+    L --- VS
 ```
 
 ## Passo a passo (resumo)
-1. **Entrada**: o usuário envia uma pergunta para `POST /query`.
-2. **Triagem opcional**: o LLM pode classificar a intenção (ex.: pedir esclarecimento).
+1. **Entrada**: o usuário envia uma pergunta para `POST /agent/ask` (há um endpoint legado `POST /query` que chama o pipeline direto).
+2. **Triagem/roteamento**: o agente LangGraph decide a ação (responder direto, pedir esclarecimentos ou acionar o RAG).
 3. **Rota Lexical**: se houver bons *hits* por sentença (com bônus por departamento), responde diretamente com trechos/citações.
 4. **Rota Vetorial**: caso contrário, gera **multi-queries** (sinônimos do `terms.yml`), consulta o **FAISS**, reranqueia com **CrossEncoder** e calcula a **confiança**.
 5. **Resgate/Resposta**: o texto final é gerado pelo LLM usando os trechos mais relevantes. `confidence >= CONFIDENCE_MIN` libera resposta “segura” quando `REQUIRE_CONTEXT=true`.

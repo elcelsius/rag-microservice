@@ -18,7 +18,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         try {
             // Faz a chamada para a nossa API backend
-            const response = await fetch('http://localhost:5000/query', {
+            const response = await fetch('/agent/ask', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json'
