@@ -8,11 +8,11 @@ Este documento define um roteiro prático e priorizado para aprimorar o microser
 
 **Objetivo:** Substituir a avaliação manual e subjetiva por um processo automatizado e objetivo, permitindo medir o impacto de cada mudança no código e garantir a qualidade contínua das respostas.
 
-**Status:** A Fazer
+**Status:** Concluído
 
 ### Passos de Implementação:
 
-1.  **[ ] Criar um "Golden Dataset" de Avaliação:**
+1.  **[x] Criar um "Golden Dataset" de Avaliação:**
     *   **Ação:** Desenvolver um arquivo `evaluation_dataset.jsonl` na raiz do projeto.
     *   **Estrutura:** Cada linha do arquivo conterá um objeto JSON com os seguintes campos:
         *   `question`: Uma pergunta de teste.
@@ -20,7 +20,7 @@ Este documento define um roteiro prático e priorizado para aprimorar o microser
         *   `contexts`: Uma lista de trechos de texto (os "chunks" exatos) que devem ser usados para formular a resposta.
     *   **Meta Inicial:** Começar com 20-30 exemplos que cubram diferentes tipos de perguntas (contato, procedimento, etc.).
 
-2.  **[ ] Desenvolver o Script de Avaliação (`evaluate.py`):**
+2.  **[x] Desenvolver o Script de Avaliação (`evaluate.py`):**
     *   **Ação:** Criar um novo script `tools/evaluate.py`.
     *   **Lógica:**
         1.  Adicionar `ragas` ao `requirements.txt`.
@@ -32,7 +32,7 @@ Este documento define um roteiro prático e priorizado para aprimorar o microser
             *   `context_precision` e `context_recall`: Medem a qualidade do pipeline de recuperação (FAISS + Reranker).
         5.  Ao final, o script deve imprimir um relatório com a média de cada métrica.
 
-3.  **[ ] Integrar ao Fluxo de Trabalho:**
+3.  **[x] Integrar ao Fluxo de Trabalho:**
     *   **Ação:** Executar o script `evaluate.py` manualmente após qualquer mudança significativa (ex: alteração de prompts, ajuste de `CONFIDENCE_MIN`) para validar se a qualidade foi mantida ou melhorada.
     *   **Longo Prazo:** Integrar a execução do script em um pipeline de CI/CD para automatizar completamente a regressão de qualidade.
 
@@ -42,15 +42,15 @@ Este documento define um roteiro prático e priorizado para aprimorar o microser
 
 **Objetivo:** Reduzir drasticamente a latência e o custo para perguntas frequentes, melhorando a experiência do usuário e otimizando o uso de recursos.
 
-**Status:** A Fazer
+**Status:** Concluído
 
 ### Passos de Implementação:
 
-1.  **[ ] Configurar o Ambiente:**
+1.  **[x] Configurar o Ambiente:**
     *   **Ação:** Adicionar `redis` ao `requirements.txt`.
     *   **Ação:** Atualizar os arquivos `docker-compose.cpu.yml` and `docker-compose.gpu.yml` para incluir um serviço Redis.
 
-2.  **[ ] Implementar a Lógica de Cache no `api.py`:**
+2.  **[x] Implementar a Lógica de Cache no `api.py`:**
     *   **Ação:** Modificar o endpoint `@app.post("/query")`.
     *   **Lógica:**
         1.  No início da função, criar uma chave de cache a partir da pergunta do usuário (ex: `cache_key = f"rag_query:{hash(request.get_json()['question'].lower().strip())}"`).
@@ -59,7 +59,7 @@ Este documento define um roteiro prático e priorizado para aprimorar o microser
         4.  **Cache Miss:** Se a chave não existir, executar o pipeline de RAG normalmente.
         5.  Antes de retornar a resposta ao usuário, armazená-la no Redis usando a `cache_key` e definindo um tempo de expiração (TTL), por exemplo, 24 horas.
 
-3.  **[ ] Implementar a Invalidação do Cache:**
+3.  **[x] Implementar a Invalidação do Cache:**
     *   **Ação:** Modificar o `etl_orchestrator.py`.
     *   **Lógica:** Ao final da execução bem-sucedida do ETL (tanto no modo `rebuild` quanto `update`), adicionar uma chamada para o Redis que limpa todas as chaves com o prefixo `rag_query:`. Isso garante que as respostas cacheadas não fiquem desatualizadas após uma atualização da base de conhecimento.
 

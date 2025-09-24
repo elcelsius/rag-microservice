@@ -8,6 +8,7 @@ flowchart LR
     subgraph API
       A[Flask API<br/>/query]
       H[Health/Metrics]
+      C[(Redis Cache)]
     end
     subgraph Retrieval
       VS[(FAISS Index)]
@@ -26,6 +27,7 @@ flowchart LR
       EMB_E[HF Embeddings]
       VS_B[FAISS Build/Update]
       DB[(PostgreSQL<br/>hashes/chunks)]
+      C_ETL[(Redis Cache)]
     end
     subgraph Agent
       TG[Triagem]
@@ -34,7 +36,10 @@ flowchart LR
     end
 
     U -->|Pergunta| A
-    A -->|triagem opcional| TRI
+    A -->|1. Cache?| C
+    C -->|HIT| A
+    C -->|MISS| TRI
+
     TRI -->|ação| TG
     TG -->|AUTO_RESOLVER| AR
     TG -->|PEDIR_INFO| PD
@@ -42,7 +47,8 @@ flowchart LR
     AR -->|Rota 1| LEX
     LEX -->|se encontrou| GEN
     AR -->|Rota 2| MQ --> VS --> RER --> GEN
-    GEN -->|Resposta + Citações + Confiança| A
+    GEN -->|Resposta| A
+    A -->|Salva no Cache| C
 
     H --- A
 
@@ -50,22 +56,21 @@ flowchart LR
     LD --> SPL --> EMB_E --> VS_B --> VS
     VS_B --> DB
     DB -->|incremental| VS_B
-
-    %% Embeddings em runtime
-    A --- EMB
-    A --- VS
+    
+    %% Invalidação de Cache no ETL
+    VS_B --> C_ETL
 ```
 
 ## Passo a passo (resumo)
-1. **Entrada**: o usuário envia uma pergunta para `POST /query`.
-2. **Triagem opcional**: o LLM pode classificar a intenção (ex.: pedir esclarecimento).
+1. **Entrada e Cache**: o usuário envia uma pergunta para `POST /query`. O sistema primeiro verifica no cache **Redis**. Se a resposta for encontrada (HIT), ela é retornada imediatamente.
+2. **Triagem (em caso de MISS)**: se não houver cache, o LLM pode classificar a intenção (ex.: pedir esclarecimento).
 3. **Rota Lexical**: se houver bons *hits* por sentença (com bônus por departamento), responde diretamente com trechos/citações.
 4. **Rota Vetorial**: caso contrário, gera **multi-queries** (sinônimos do `terms.yml`), consulta o **FAISS**, reranqueia com **CrossEncoder** e calcula a **confiança**.
-5. **Resgate/Resposta**: o texto final é gerado pelo LLM usando os trechos mais relevantes. `confidence >= CONFIDENCE_MIN` libera resposta “segura” quando `REQUIRE_CONTEXT=true`.
-6. **ETL**: arquivos em `data/` são carregados pelos *loaders*, *chunkados*, embedded e indexados no FAISS. Metadados/hashes vão para o PostgreSQL para **atualizações incrementais**.
+5. **Resgate/Resposta**: o texto final é gerado pelo LLM usando os trechos mais relevantes. A resposta é **salva no cache Redis** antes de ser retornada.
+6. **ETL**: arquivos em `data/` são carregados, processados e indexados no FAISS. Ao final do processo, o **cache Redis é invalidado** para garantir que os dados não fiquem desatualizados.
 
 ## Notas de Configuração
+- **Cache**: configure as variáveis `REDIS_HOST` e `REDIS_PORT` no `.env`.
 - **Embeddings**: defina `EMBEDDINGS_MODEL` no `.env` para alinhar **ETL** e **API**.
 - **Confiança**: o padrão atual no README é `CONFIDENCE_MIN=0.32`.
-- **Sinônimos/Boosts**: mantenha `terms.yml` para *aliases*, *synonyms* e *boosts*.
 - **Observabilidade**: use `/healthz`, `/metrics` e `debug=true` no `/query` para inspeções.
