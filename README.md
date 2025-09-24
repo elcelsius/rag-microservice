@@ -10,6 +10,7 @@ Este projeto implementa um sistema de Pergunta-Resposta (Question-Answering) bas
 - [Executando os Testes](#executando-os-testes)
 - [Estrutura do Projeto](#estrutura-do-projeto)
 - [Variáveis de Ambiente](#variáveis-de-ambiente)
+- [Status Atual e Próximos Passos](#status-atual-e-próximos-passos)
 
 ---
 
@@ -179,3 +180,32 @@ As principais variáveis de ambiente para configurar o comportamento do sistema 
 - **Formato da resposta**: `STRUCTURED_ANSWER` (markdown com resumo/fontes) e `MAX_SOURCES`.
 
 Caso queira forçar uma rota específica para debug, use `ROUTE_FORCE=lexical|vector`.
+
+---
+
+## Status Atual e Próximos Passos
+
+### Verificação Recente do Reranker
+
+Em testes recentes, foi verificado que o componente de reranqueamento está ativo e funcional (`"enabled": true`). Ele reordena os *chunks* recuperados pela busca vetorial, aplicando uma lógica de relevância mais refinada.
+
+**Conclusão:** O reranker funciona como esperado. No entanto, a resposta final gerada a partir do *chunk* melhor classificado apresentou um score de confiança muito baixo (ex: 0.0036). Isso indica que, embora o reordenamento técnico funcione, a relevância do conteúdo recuperado ainda não é ótima para responder a certas perguntas, sendo um ponto-chave para as próximas melhorias.
+
+### Sugestões de Melhoria
+
+Para aumentar a relevância e a confiança das respostas, as seguintes ações são recomendadas:
+
+1.  **Reforço Lexical e Boosts**:
+    *   Ajustar as expansões de multi-query em `CUSTOM_MQ_EXPANSIONS` para gerar variações mais ricas e direcionadas (ex: incluir termos como "e-mail stpg reserva").
+    *   Analisar as `mq_variants` (com `debug=true`) para validar a eficácia das novas expansões.
+
+2.  **Afinar Termos da Ontologia**:
+    *   Em `config/ontology/terms.yml`, aumentar os `boosts` de termos importantes e adicionar mais sinônimos (`aliases`) para conceitos como "reserva", "impressão", "LEPEC", etc.
+
+3.  **Reavaliação Contínua**:
+    *   Após cada ajuste, rodar o script de avaliação para medir o impacto de forma objetiva:
+        ```bash
+        python eval_rag.py --compare --label "nome-do-experimento"
+        ```
+
+Para um roteiro mais detalhado de melhorias planejadas, consulte o documento [melhorias.md](./melhorias.md).
