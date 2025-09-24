@@ -21,6 +21,10 @@ dataclasses-json==0.6.7
 # Biblioteca para parsing de arquivos YAML (usado para configs, etc.).
 PyYAML==6.0.2
 
+# --- Cache ---
+# Cliente Python para o banco de dados em memória Redis.
+redis==5.0.7
+
 # --- Ecossistema LangChain ---
 # Componentes da comunidade LangChain para integrações diversas.
 langchain-community==0.2.10

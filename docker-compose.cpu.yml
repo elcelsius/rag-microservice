@@ -8,19 +8,31 @@ services:
       POSTGRES_PASSWORD: postgres
       POSTGRES_DB: ragdb
     volumes:
-      # 'pgdata' é um volume nomeado para persistir os dados do banco.
       - pgdata:/var/lib/postgresql/data
     ports:
-      # Mapeia a porta 5432 do container para a porta 5432 do host.
       - "5432:5432"
     healthcheck:
-      # Verifica se o banco de dados está pronto para aceitar conexões.
       test: ["CMD-SHELL", "pg_isready -U postgres -d ragdb"]
       interval: 10s
       timeout: 5s
       retries: 20
       start_period: 20s
     restart: unless-stopped
+
+  # Serviço de Cache Redis
+  ai_redis:
+    image: redis:7-alpine
+    container_name: ai_redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   # Serviço de ETL (Extract, Transform, Load)
   ai_etl:
@@ -34,10 +46,12 @@ services:
       DATABASE_URL: "postgresql://postgres:postgres@ai_postgres:5432/ragdb"
       DATA_DIR: "/app/data"
       FAISS_OUT_DIR: "/app/vector_store/faiss_index"
-      # EMBEDDINGS_MODEL vem do .env; se quiser default aqui, ok:
-      # EMBEDDINGS_MODEL: "${EMBEDDINGS_MODEL:-intfloat/multilingual-e5-large}"
+      REDIS_HOST: "ai_redis"
+      REDIS_PORT: "6379"
     depends_on:
       ai_postgres:
+        condition: service_healthy
+      ai_redis:
         condition: service_healthy
     volumes:
       - ./data:/app/data:ro
@@ -46,7 +60,6 @@ services:
     working_dir: /app
     command: ["bash", "-lc", "python3 -u scripts/etl_build_index.py && echo 'ETL done'"]
     restart: "no"
-
 
   # Serviço da API principal
   ai_projeto_api:
@@ -57,16 +70,17 @@ services:
     env_file:
       - .env
     environment:
-      # Só o que é específico do container (ou defaults que não conflitam):
+      REDIS_HOST: "ai_redis"
+      REDIS_PORT: "6379"
       FAISS_STORE_DIR: "/app/vector_store/faiss_index"
       HF_ALLOW_CODE_EVAL: "1"
       TRANSFORMERS_NO_ADVISORY_WARNINGS: "1"
       TRANSFORMERS_TRUST_REMOTE_CODE: "1"
-      # Se quiser forçar rota SOMENTE vetorial para diagnóstico, descomente:
-      # ROUTE_FORCE: "vector"
     depends_on:
       ai_etl:
         condition: service_completed_successfully
+      ai_redis:
+        condition: service_healthy
     volumes:
       - vector_store:/app/vector_store
       - ./prompts:/app/prompts:ro
@@ -76,28 +90,26 @@ services:
       - "5000:5000"
     healthcheck:
       test: ["CMD", "python3", "-c", "import json,urllib.request,sys; d=json.loads(urllib.request.urlopen('http://localhost:5000/healthz').read().decode()); sys.exit(0 if (d.get('ready') is True) else 1)"]
-      interval: 10s
-      timeout: 5s
-      retries: 20
-
+      interval: 20s
+      timeout: 10s
+      retries: 15
+      start_period: 90s # Aumenta o tempo de carência para 90 segundos
 
   # Serviço da Interface Web (UI)
   ai_web_ui:
     image: nginx:1.27-alpine
     container_name: ai_web_ui
     depends_on:
-      # A UI só inicia quando a API estiver saudável.
       ai_projeto_api:
         condition: service_healthy
     ports:
-      - "8080:80" # Expõe a UI na porta 8080.
+      - "8080:80"
     volumes:
-      # Mapeia os arquivos estáticos (HTML/JS/CSS) e a configuração do Nginx.
       - ./web_ui/html:/usr/share/nginx/html:ro
       - ./web_ui/conf.d:/etc/nginx/conf.d:ro
     restart: unless-stopped
 
-# Declaração dos volumes nomeados para persistência de dados.
 volumes:
   pgdata:
   vector_store:
+  redisdata: # Volume para persistir dados do Redis

@@ -18,14 +18,30 @@ services:
       start_period: 20s
     restart: unless-stopped
 
+  # Serviço de Cache Redis
+  ai_redis:
+    image: redis:7-alpine
+    container_name: ai_redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   ai_etl:
     build:
       context: .
       dockerfile: Dockerfile.gpu
-      # target: etl   # <-- deixe comentado se não houver estágio "AS etl"
     container_name: ai_etl
     environment:
-      CUDA_VISIBLE_DEVICES: ""   # <— força CPU no ETL
+      REDIS_HOST: "ai_redis"
+      REDIS_PORT: "6379"
+      CUDA_VISIBLE_DEVICES: ""
       DATABASE_URL: "postgresql://postgres:postgres@ai_postgres:5432/ragdb"
       DATA_DIR: "/app/data"
       FAISS_OUT_DIR: "/app/vector_store/faiss_index"
@@ -41,6 +57,8 @@ services:
       REQUIRE_CONTEXT: "${REQUIRE_CONTEXT:-true}"
     depends_on:
       ai_postgres:
+        condition: service_healthy
+      ai_redis:
         condition: service_healthy
     volumes:
       - ./data:/app/data:ro
@@ -61,9 +79,10 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.gpu
-      # target: ai_api  # <-- deixe comentado se não houver estágio "AS ai_api"
     container_name: ai_projeto_api
     environment:
+      REDIS_HOST: "ai_redis"
+      REDIS_PORT: "6379"
       FAISS_STORE_DIR: "/app/vector_store/faiss_index"
       EMBEDDINGS_MODEL: "${EMBEDDINGS_MODEL:-intfloat/multilingual-e5-large}"
       GOOGLE_API_KEY: "${GOOGLE_API_KEY:-}"
@@ -75,11 +94,13 @@ services:
       STRUCTURED_ANSWER: "${STRUCTURED_ANSWER:-true}"
       RERANKER_MAX_LEN: "${RERANKER_MAX_LEN:-512}"
       MAX_SOURCES: "${MAX_SOURCES:-5}"
-      DEBUG_LOG: "${DEBUG_LOG:-true}"         # logar no stdout
-      DEBUG_PAYLOAD: "${DEBUG_PAYLOAD:-true}" # incluir "debug" na resposta quando ?debug=true
+      DEBUG_LOG: "${DEBUG_LOG:-true}"
+      DEBUG_PAYLOAD: "${DEBUG_PAYLOAD:-true}"
     depends_on:
       ai_etl:
         condition: service_completed_successfully
+      ai_redis:
+        condition: service_healthy
     volumes:
       - vector_store:/app/vector_store
       - ./prompts:/app/prompts:ro
@@ -89,9 +110,10 @@ services:
       - "5000:5000"
     healthcheck:
       test: ["CMD", "python3", "-c", "import json,urllib.request,sys; d=json.loads(urllib.request.urlopen('http://localhost:5000/healthz').read().decode()); sys.exit(0 if (d.get('ready') is True) else 1)"]
-      interval: 10s
-      timeout: 5s
-      retries: 20
+      interval: 20s
+      timeout: 10s
+      retries: 15
+      start_period: 90s # Aumenta o tempo de carência para 90 segundos
     deploy:
       resources:
         reservations:
@@ -116,3 +138,4 @@ services:
 volumes:
   pgdata:
   vector_store:
+  redisdata: # Volume para persistir dados do Redis
