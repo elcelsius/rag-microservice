@@ -1,36 +1,37 @@
 # Arquitetura & Fluxo do Sistema (RAG + Agente)
 
 ```mermaid
+
 flowchart LR
     subgraph Client
       U[Usuário]
     end
     subgraph API
-      A[Flask API<br/>/query]
+      A["Flask API\n/query"]
       H[Health/Metrics]
     end
     subgraph Retrieval
       VS[(FAISS Index)]
-      EMB[HF Embeddings]
-      MQ[Multi-Query<br/> + Sinônimos]
-      LEX[Busca Lexical<br/> (hits por sentença + bônus de depto)]
-      RER[CrossEncoder<br/> (Reranker)]
+      EMB["HF Embeddings"]
+      MQ["Multi-Query\n+ Sinônimos"]
+      LEX["Busca Lexical\n(sentenças + bonus depto)"]
+      RER["CrossEncoder\nReranker"]
     end
     subgraph LLM
-      TRI[LLM Triagem]
-      GEN[LLM Geração de Resposta]
+      TRI["LLM Triagem"]
+      GEN["LLM Geração de Resposta"]
     end
     subgraph ETL
-      LD[Loaders<br/>(pdf, docx, md, txt, code, ...)]
-      SPL[Chunking]
-      EMB_E[HF Embeddings]
-      VS_B[FAISS Build/Update]
-      DB[(PostgreSQL<br/>hashes/chunks)]
+      LD["Loaders\n(pdf, docx, md, txt, code, ...)"]
+      SPL["Chunking"]
+      EMB_E["HF Embeddings"]
+      VS_B["FAISS Build/Update"]
+      DB["PostgreSQL\nhashes/chunks"]
     end
     subgraph Agent
-      TG[Triagem]
-      AR[Auto Resolver<br/>(chama RAG)]
-      PD[Pedir Info]
+      TG["Triagem"]
+      AR["Auto Resolver\nchama RAG"]
+      PD["Pedir Info"]
     end
 
     U -->|Pergunta| A
@@ -54,6 +55,7 @@ flowchart LR
     %% Embeddings em runtime
     A --- EMB
     A --- VS
+
 ```
 
 ## Passo a passo (resumo)
