@@ -32,36 +32,37 @@ Este projeto implementa um microserviço **RAG** (Retrieval-Augmented Generation
 > Visualiza corretamente no GitHub/GitLab/VSCode com extensão Mermaid.
 
 ```mermaid
+
 flowchart LR
     subgraph Client
       U[Usuário]
     end
     subgraph API
-      A[Flask API\n/query]
+      A["Flask API\n/query"]
       H[Health/Metrics]
     end
     subgraph Retrieval
       VS[(FAISS Index)]
-      EMB[HF Embeddings]
-      MQ[Multi-Query\n+ Sinônimos]
-      LEX["Busca Lexical\n(sentenças + bônus de depto)"]
-      RER[CrossEncoder\n(Reranker)]
+      EMB["HF Embeddings"]
+      MQ["Multi-Query\n+ Sinônimos"]
+      LEX["Busca Lexical\n(sentenças + bonus depto)"]
+      RER["CrossEncoder\nReranker"]
     end
     subgraph LLM
-      TRI[LLM Triagem]
-      GEN[LLM Geração de Resposta]
+      TRI["LLM Triagem"]
+      GEN["LLM Geração de Resposta"]
     end
     subgraph ETL
-      LD[Loaders\n(pdf, docx, md, txt, code, ...)]
-      SPL[Chunking]
-      EMB_E[HF Embeddings]
-      VS_B[FAISS Build/Update]
-      DB[(PostgreSQL\nhashes/chunks)]
+      LD["Loaders\n(pdf, docx, md, txt, code, ...)"]
+      SPL["Chunking"]
+      EMB_E["HF Embeddings"]
+      VS_B["FAISS Build/Update"]
+      DB["PostgreSQL\nhashes/chunks"]
     end
     subgraph Agent
-      TG[Triagem]
-      AR[Auto Resolver\n(chama RAG)]
-      PD[Pedir Info]
+      TG["Triagem"]
+      AR["Auto Resolver\nchama RAG"]
+      PD["Pedir Info"]
     end
 
     U -->|Pergunta| A
@@ -85,6 +86,7 @@ flowchart LR
     %% Embeddings em runtime
     A --- EMB
     A --- VS
+
 ```
 
 > Versão standalone (com mais detalhes): veja **ARCHITECTURE.md**.
