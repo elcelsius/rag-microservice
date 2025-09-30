@@ -6,8 +6,11 @@ from flask import Flask, request, jsonify
 import redis
 
 from langchain_community.vectorstores import FAISS
-from langchain.embeddings import HuggingFaceEmbeddings
-from query_handler import answer_question
+# CORREÇÃO: Importa do local correto para evitar o DeprecationWarning
+from langchain_community.embeddings import HuggingFaceEmbeddings
+
+# --- CORREÇÃO: Importa o grafo do agente em vez da função antiga ---
+from agent_workflow import compiled_graph
 
 # Tenta importar o cliente LLM de forma lazy (preguiçosa).
 try:
@@ -19,7 +22,7 @@ except Exception:
 APP_READY = False
 FAISS_OK = False
 LLM_OK = False
-REDIS_OK = False # Novo estado para a prontidão do Redis
+REDIS_OK = False
 REQUIRE_LLM_READY = os.getenv("REQUIRE_LLM_READY", "false").lower() in ("1", "true", "yes")
 
 # --- Configurações do Ambiente ---
@@ -29,7 +32,7 @@ EMBEDDINGS_MODEL = os.getenv("EMBEDDINGS_MODEL") or os.getenv("EMBEDDINGS_MODEL_
 # --- Configurações do Cache Redis ---
 REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
 REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
-CACHE_TTL_SECONDS = int(os.getenv("CACHE_TTL_SECONDS", 86400)) # Padrão: 24 horas
+CACHE_TTL_SECONDS = int(os.getenv("CACHE_TTL_SECONDS", 86400))
 
 # --- Métricas Simples para Monitoramento ---
 METRICS = Counter()
@@ -41,28 +44,25 @@ app = Flask(__name__)
 redis_client = None
 try:
     redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=True)
-    redis_client.ping() # Verifica a conexão
+    redis_client.ping()
     print(f"[API] Conectado ao Redis em {REDIS_HOST}:{REDIS_PORT}", flush=True)
     REDIS_OK = True
 except Exception as e:
     print(f"[API] AVISO: Não foi possível conectar ao Redis: {e}", flush=True)
     REDIS_OK = False
 
-
-# --- Rotas de Debug ---
-@app.get("/debug/dict")
-def debug_dict():
-    try:
-        from query_handler import DEPARTMENTS, ALIASES, SYNONYMS, BOOSTS
-        return {"departments": DEPARTMENTS, "aliases_keys": list(ALIASES.keys()), "synonyms_keys": list(SYNONYMS.keys()), "boosts": BOOSTS}, 200
-    except Exception as e:
-        return {"error": str(e)}, 500
-
-@app.get("/debug/env")
-def debug_env():
-    keys = ["TERMS_YAML", "FAISS_STORE_DIR", "EMBEDDINGS_MODEL", "RERANKER_ENABLED", "RERANKER_NAME", "MQ_ENABLED", "MQ_VARIANTS", "CONFIDENCE_MIN", "REQUIRE_CONTEXT", "REDIS_HOST", "REDIS_PORT"]
-    return {k: os.getenv(k) for k in keys}, 200
-
+# --- Inicialização dos Modelos e Vectorstore ---
+# Estes modelos são passados para o workflow do agente, que por sua vez os passa para o query_handler.
+embeddings_model = None
+vectorstore = None
+try:
+    print(f"[API] Carregando modelo de embeddings: {EMBEDDINGS_MODEL}", flush=True)
+    embeddings_model = HuggingFaceEmbeddings(model_name=EMBEDDINGS_MODEL)
+    print(f"[API] Carregando FAISS de: {FAISS_STORE_DIR}", flush=True)
+    vectorstore = FAISS.load_local(FAISS_STORE_DIR, embeddings_model, allow_dangerous_deserialization=True)
+    print("[API] FAISS carregado com sucesso.", flush=True)
+except Exception as e:
+    print(f"[API] CRÍTICO: Falha ao carregar FAISS ou modelo de embeddings: {e}", flush=True)
 
 # --- Funções de Verificação de Prontidão (Probes) ---
 def _probe_faiss(vs) -> bool:
@@ -88,19 +88,6 @@ def _update_readiness(vs=None):
     REDIS_OK = _probe_redis()
     APP_READY = FAISS_OK and (LLM_OK if REQUIRE_LLM_READY else True)
 
-
-# --- Inicialização dos Modelos e Vectorstore ---
-embeddings_model = None
-vectorstore = None
-try:
-    print(f"[API] Carregando modelo de embeddings: {EMBEDDINGS_MODEL}", flush=True)
-    embeddings_model = HuggingFaceEmbeddings(model_name=EMBEDDINGS_MODEL)
-    print(f"[API] Carregando FAISS de: {FAISS_STORE_DIR}", flush=True)
-    vectorstore = FAISS.load_local(FAISS_STORE_DIR, embeddings_model, allow_dangerous_deserialization=True)
-    print("[API] FAISS carregado com sucesso.", flush=True)
-except Exception as e:
-    print(f"[API] CRÍTICO: Falha ao carregar FAISS ou modelo de embeddings: {e}", flush=True)
-
 _update_readiness(vectorstore)
 
 
@@ -111,15 +98,13 @@ def root():
 
 @app.get("/healthz")
 def healthz():
-    _update_readiness(vectorstore) # Reavalia a prontidão a cada chamada
+    _update_readiness(vectorstore)
     status = {
         "ready": bool(APP_READY),
         "faiss": bool(FAISS_OK),
         "llm": bool(LLM_OK),
-        "redis": bool(REDIS_OK), # Adiciona status do Redis
+        "redis": bool(REDIS_OK),
         "require_llm_ready": REQUIRE_LLM_READY,
-        "faiss_store_dir": FAISS_STORE_DIR,
-        "embeddings_model": EMBEDDINGS_MODEL,
     }
     code = 200 if status["ready"] else 503
     return jsonify(status), code
@@ -145,8 +130,6 @@ def query():
         METRICS["bad_request"] += 1
         return jsonify({"error": "O campo 'question' é obrigatório."}), 400
 
-    debug_flag = bool(data.get("debug")) or (request.args.get("debug", "").lower() == "true")
-
     # --- Lógica de Cache (Leitura) ---
     cache_key = None
     if redis_client and REDIS_OK:
@@ -164,25 +147,37 @@ def query():
             print(f"[API] AVISO: Falha ao ler do cache Redis: {e}", flush=True)
     
     print(f"[API] Cache MISS para a chave: {cache_key or 'N/A'}", flush=True)
-    # --- Fim da Lógica de Cache (Leitura) ---
 
     res = {}
     status = "ok"
     try:
-        res = answer_question(question, embeddings_model, vectorstore, debug=debug_flag)
+        # --- CORREÇÃO: Invoca o grafo do agente em vez da função direta ---
+        agent_input = {"pergunta": question}
+        final_state = compiled_graph.invoke(agent_input)
+
+        # Extrai a resposta final do estado do agente
+        res = {
+            "answer": final_state.get("resposta"),
+            "citations": final_state.get("citacoes", []),
+            "context_found": bool(final_state.get("citacoes")),
+            "needs_clarification": final_state.get("acao_final") == "PEDIR_INFO"
+        }
+        # ------------------------------------------------------------------
+
         METRICS["queries_total"] += 1
         if res.get("needs_clarification"): METRICS["queries_ambiguous"] += 1
         elif not res.get("context_found"): METRICS["queries_not_found"] += 1
         else: METRICS["queries_answered"] += 1
 
         # --- Lógica de Cache (Escrita) ---
-        if redis_client and REDIS_OK and cache_key and res.get("context_found"):
+        # Salva no cache apenas se a resposta for conclusiva
+        if redis_client and REDIS_OK and cache_key and not res.get("needs_clarification") and res.get("context_found"):
             try:
+                # O objeto 'res' já está no formato de dicionário correto
                 redis_client.set(cache_key, json.dumps(res), ex=CACHE_TTL_SECONDS)
                 print(f"[API] Resposta armazenada no cache com a chave: {cache_key}", flush=True)
             except Exception as e:
                 print(f"[API] AVISO: Falha ao escrever no cache Redis: {e}", flush=True)
-        # --- Fim da Lógica de Cache (Escrita) ---
 
     except Exception as e:
         status = f"error:{type(e).__name__}"

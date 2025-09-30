@@ -1,0 +1,22 @@
+Você é um assistente de IA focado em precisão. Sua tarefa é reescrever uma resposta anterior para que ela seja estritamente baseada no contexto fornecido, eliminando qualquer informação que não possa ser comprovada por ele.
+
+REGRAS:
+1.  Use APENAS as informações presentes no CONTEXTO.
+2.  Não adicione conhecimento externo ou faça suposições.
+3.  Se o contexto não for suficiente para responder à pergunta, responda com: "Com base no contexto fornecido, não foi possível encontrar uma resposta direta."
+4.  Mantenha a resposta final concisa e direta.
+
+---
+
+PERGUNTA ORIGINAL:
+{pergunta}
+
+CONTEXTO FORNECIDO:
+{contexto}
+
+RESPOSTA ANTERIOR (com possível alucinação):
+{resposta_anterior}
+
+---
+
+NOVA RESPOSTA (estritamente baseada no contexto):

@@ -8,19 +8,14 @@ from dotenv import load_dotenv
 from datasets import Dataset
 from ragas import evaluate
 
-# --- SOLUÇÃO DEFINITIVA: Implementação completa da interface esperada pelo RAGAs ---
-import google.generativeai as genai
-from langchain_core.language_models.llms import LLM
-from typing import Any, List, Optional, Dict
-from langchain_core.pydantic_v1 import root_validator
-
+# --- Importações Refatoradas ---
+from llm_adapters import RagasGoogleApiLLM # Importa a classe do novo módulo
 from ragas.metrics import (
     Faithfulness,
     AnswerRelevancy,
     ContextRecall,
     ContextPrecision,
 )
-
 from langchain_huggingface import HuggingFaceEmbeddings
 
 # Carrega variáveis de ambiente do arquivo .env (ex: GOOGLE_API_KEY)
@@ -29,43 +24,6 @@ load_dotenv()
 # --- Configurações ---
 API_URL = "http://localhost:5000/query"
 EVAL_DATASET_PATH = "evaluation_dataset.jsonl"
-
-
-# --- Adaptador de LLM para o RAGAs (Versão Final e Robusta) ---
-class RagasGoogleApiLLM(LLM):
-    model_name: str
-    model: Any = None
-
-    @root_validator(pre=False, skip_on_failure=True)
-    def _initialize_model(cls, values: Dict[str, Any]) -> Dict[str, Any]:
-        if "model_name" in values:
-            genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
-            values["model"] = genai.GenerativeModel(values["model_name"])
-        return values
-
-    @property
-    def _llm_type(self) -> str:
-        return "ragas_google_api_llm"
-
-    def _call(
-        self, prompt: str, stop: Optional[List[str]] = None, **kwargs: Any
-    ) -> str:
-        prompt_text = str(prompt)
-        if self.model is None:
-            raise ValueError("Modelo GenAI não inicializado. Verifique a configuração.")
-            
-        try:
-            temperature = kwargs.get("temperature", 0.0)
-            response = self.model.generate_content(prompt_text, generation_config={"temperature": temperature})
-            return response.text
-        except Exception as e:
-            print(f"Erro na chamada da API do Google: {e}")
-            return ""
-
-    # CORREÇÃO: Adiciona o método set_run_config para cumprir o contrato do RAGAs
-    def set_run_config(self, run_config: Any):
-        """Este método é exigido pelo RAGAs, mas não precisamos fazer nada com ele."""
-        pass
 
 
 # --- Configurar o LLM e os Embeddings para o RAGAs ---
