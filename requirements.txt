@@ -20,22 +20,25 @@ aiohttp==3.12.15
 dataclasses-json==0.6.7
 # Biblioteca para parsing de arquivos YAML (usado para configs, etc.).
 PyYAML==6.0.2
-
 # --- Ecossistema LangChain ---
 # Componentes da comunidade LangChain para integrações diversas.
 langchain-community==0.2.10
 # O núcleo do LangChain, com as abstrações principais (LLMs, Chains, etc.).
 langchain-core==0.2.43
+# Classe de embeddings separada conforme a recomendação do LangChain 0.2+.
+langchain-huggingface==0.0.3
 # Algoritmos para dividir textos longos em pedaços menores (chunks).
 langchain-text-splitters==0.2.4
 
 # --- Modelos de Embeddings (Hugging Face) ---
 # Framework para trabalhar com modelos de embeddings e transformers.
-sentence-transformers==2.2.2
+sentence-transformers>=2.6.0,<2.7
 # Hub para baixar modelos e datasets do Hugging Face.
 huggingface-hub==0.24.6
 # Biblioteca principal do Hugging Face para modelos de NLP.
 transformers==4.48.3
+# SentencePiece compatível com os modelos multilíngues utilizados.
+sentencepiece==0.2.0
 
 # --- Vector Store e Análise de Similaridade ---
 # Biblioteca para busca de similaridade eficiente em vetores.

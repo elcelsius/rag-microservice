@@ -4,7 +4,7 @@ import os, time, uuid, json
 from collections import Counter
 from flask import Flask, request, jsonify
 from langchain_community.vectorstores import FAISS
-from langchain.embeddings import HuggingFaceEmbeddings
+from langchain_huggingface import HuggingFaceEmbeddings
 from query_handler import answer_question
 
 # Tenta importar o cliente LLM de forma lazy (preguiçosa). Se falhar, define como None.

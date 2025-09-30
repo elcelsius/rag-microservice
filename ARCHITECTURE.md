@@ -67,7 +67,8 @@ flowchart LR
 6. **ETL**: arquivos em `data/` são carregados pelos *loaders*, *chunkados*, embedded e indexados no FAISS. Metadados/hashes vão para o PostgreSQL para **atualizações incrementais**.
 
 ## Notas de Configuração
-- **Embeddings**: defina `EMBEDDINGS_MODEL` no `.env` para alinhar **ETL** e **API**.
+- **Embeddings**: defina `EMBEDDINGS_MODEL` no `.env` para alinhar **ETL** e **API**. A implementação usa `langchain_huggingface.HuggingFaceEmbeddings`, conforme a recomendação do LangChain 0.2+.
 - **Confiança**: o padrão atual no README é `CONFIDENCE_MIN=0.32`.
 - **Sinônimos/Boosts**: mantenha `terms.yml` para *aliases*, *synonyms* e *boosts*.
 - **Observabilidade**: use `/healthz`, `/metrics` e `debug=true` no `/query` para inspeções.
+- **Compose GPU**: mesmo na pilha GPU, `ai_etl` roda com `CUDA_VISIBLE_DEVICES=""` (CPU) e depende de `sentencepiece==0.2.0` para evitar o crash `free(): double free`; a GPU fica reservada para a API.

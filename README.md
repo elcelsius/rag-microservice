@@ -100,6 +100,8 @@ flowchart LR
 - FAISS (via LangChain/FAISS) + HuggingFace Embeddings
 - Chaves de LLM (Gemini/OpenAI) se for usar geração/triagem
 
+> O `requirements.txt` já inclui `langchain-huggingface` (para os embeddings do LangChain 0.2+) e fixa `sentencepiece==0.2.0`, evitando o crash `free(): double free` em ambientes CUDA.
+
 Instale dependências (exemplo):
 ```bash
 pip install -r requirements.txt
@@ -146,6 +148,8 @@ GEMINI_API_KEY=...
 3. Saída padrão do índice: `./vector_store/faiss_index` (pode variar conforme seu script).
 4. Para atualizações incrementais, use os modos de **update** ou **watch** conforme seu orquestrador de ETL.
 
+> No compose GPU (`docker-compose.gpu.yml`), o serviço `ai_etl` roda em **CPU** (`CUDA_VISIBLE_DEVICES=""`) para garantir estabilidade. Execute `docker compose -f docker-compose.gpu.yml run --rm ai_etl python3 -u scripts/etl_build_index.py` caso queira reconstruir o índice dentro do container.
+
 ---
 
 ## Subindo a API
@@ -164,6 +168,15 @@ Endpoints úteis:
 - `POST /query` — consulta RAG
 - `GET /healthz` — health/readiness
 - `GET /metrics` — contadores simples
+
+---
+
+## Testes rápidos (Smoke)
+
+- `./scripts/smoke_cpu.sh` — valida o stack CPU.
+- `./scripts/smoke_gpu.sh` — valida o stack GPU, exibindo todos os comandos em tempo real; adicione `--with-etl` para regerar o índice antes dos testes.
+
+Ambos os scripts verificam healthz, fazem consultas de debug e apontam problemas comuns com FAISS, reranker ou GPU.
 
 ---
 
@@ -213,6 +226,7 @@ Campos úteis no `debug`:
 - **Rota forçada**: `ROUTE_FORCE=vector` ajuda a depurar FAISS/reranker sem interferência lexical.
 - **Cache** (opcional): cacheie embeddings/consultas frequentes para ganho de latência.
 - **Qualidade dos dados**: remova duplicatas e normalize fontes; metadados ajudam no rerank.
+- **Compose GPU**: o `ai_etl` força CPU + `sentencepiece==0.2.0`. Se notar logs antigos com `free(): double free`, rode `docker compose -f docker-compose.gpu.yml build --no-cache ai_etl` e repita o ETL.
 
 ---
 

@@ -8,7 +8,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 # Instala as mesmas dependências de sistema.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential git curl poppler-utils tesseract-ocr \
+    build-essential git curl poppler-utils tesseract-ocr cmake pkg-config \
  && rm -rf /var/lib/apt/lists/*
 
 # --- Instalação do PyTorch com Suporte a CUDA ---
@@ -17,7 +17,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # especificando a versão compilada para CUDA 12.1 (cu121).
 # ATENÇÃO: A versão do CUDA (ex: cu121) deve ser compatível com o driver da sua GPU Host.
 RUN python3 -m pip install --no-cache-dir --upgrade pip && \
-    pip3 install --index-url https://download.pytorch.org/whl/cu121 torch torchvision torchaudio
+    pip3 install --no-cache-dir --index-url https://download.pytorch.org/whl/cu121 \
+        torch==2.4.0+cu121 \
+        torchvision==0.19.0+cu121 \
+        torchaudio==2.4.0+cu121
 
 # Instala as dependências Python para o ambiente de GPU.
 # O requirements-gpu.txt geralmente inclui 'faiss-gpu' e outras libs específicas.
