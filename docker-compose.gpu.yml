@@ -67,13 +67,6 @@ services:
     working_dir: /app
     command: ["bash", "-lc", "python3 -u scripts/etl_build_index.py && echo 'ETL done'"]
     restart: "no"
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
 
   ai_projeto_api:
     build:

@@ -24,7 +24,7 @@ from typing import List, Callable, Dict, Tuple
 
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
-from langchain_community.embeddings import HuggingFaceEmbeddings
+from langchain_huggingface import HuggingFaceEmbeddings
 
 # ----------------------------
 # Defaults via ENV (podem ser sobrescritos por flags)

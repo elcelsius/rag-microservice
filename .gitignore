@@ -23,6 +23,7 @@ vendor/
 node_modules/
 
 # Arquivos e pastas das IDEs
+/venv/
 .venv
 .idea
 /venv

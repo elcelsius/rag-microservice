@@ -1,0 +1,18 @@
+# Ignora o ambiente virtual local
+venv/
+
+# Ignora o diretório do Git
+.git/
+
+# Ignora arquivos de cache do Python
+__pycache__/
+*.pyc
+
+# Ignora diretórios de dados que são montados como volumes
+pgdata/
+vector_store/
+redisdata/
+
+# Ignora arquivos de configuração de IDE
+.vscode/
+.idea/

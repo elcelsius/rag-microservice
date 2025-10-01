@@ -13,7 +13,7 @@ from typing import Any, Dict, List, Tuple, Optional, Iterable, Set
 
 from rapidfuzz import fuzz, distance
 from langchain_community.vectorstores import FAISS
-from langchain_community.embeddings import HuggingFaceEmbeddings
+from langchain_huggingface import HuggingFaceEmbeddings
 from langchain.schema import Document
 from llm_client import load_prompt, call_llm
 

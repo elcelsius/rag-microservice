@@ -1,41 +1,41 @@
-# RAG Microservice — README (atualizado)
+# RAG Microservice â€” README (atualizado)
 
-Este projeto implementa um microserviço **RAG** (Retrieval-Augmented Generation) com cache de respostas (Redis), duas rotas de recuperação (lexical e vetorial), **reranker** via CrossEncoder e orquestração opcional por **Agente** (LangGraph). Aqui você encontra **como rodar**, **como depurar**, **como avaliar a qualidade**, e um **diagrama** do fluxo.
+Este projeto implementa um microserviÃ§o **RAG** (Retrieval-Augmented Generation) com cache de respostas (Redis), duas rotas de recuperaÃ§Ã£o (lexical e vetorial), **reranker** via CrossEncoder e orquestraÃ§Ã£o opcional por **Agente** (LangGraph). Aqui vocÃª encontra **como rodar**, **como depurar**, **como avaliar a qualidade**, e um **diagrama** do fluxo.
 
-> Se preferir um documento dedicado de arquitetura, veja **ARCHITECTURE.md** (inclui o mesmo diagrama e explicações detalhadas).
+> Se preferir um documento dedicado de arquitetura, veja **ARCHITECTURE.md** (inclui o mesmo diagrama e explicaÃ§Ãµes detalhadas).
 
 ---
 
-## Sumário
+## SumÃ¡rio
 - [Arquitetura (resumo + diagrama)](#arquitetura-resumo--diagrama)
 - [Requisitos & Setup](#requisitos--setup)
-- [Configuração (.env)](#configuração-env)
-- [Executando o ETL (build do índice)](#executando-o-etl-build-do-índice)
+- [ConfiguraÃ§Ã£o (.env)](#configuraÃ§Ã£o-env)
+- [Executando o ETL (build do Ã­ndice)](#executando-o-etl-build-do-Ã­ndice)
 - [Subindo a API](#subindo-a-api)
+- [Testes rÃ¡pidos (Smoke)](#testes-rÃ¡pidos-smoke)
 - [Consultas & Debug](#consultas--debug)
-- [Avaliação de Qualidade (RAGAs)](#avaliação-de-qualidade-ragas)
-- [Como funcionam os "pesos" e a confiança](#como-funcionam-os-pesos-e-a-confiança)
-- [Boas práticas & Troubleshooting](#boas-práticas--troubleshooting)
+- [AvaliaÃ§Ã£o de Qualidade (RAGAs)](#avaliaÃ§Ã£o-de-qualidade-ragas)
+- [Como funcionam os "pesos" e a confianÃ§a](#como-funcionam-os-pesos-e-a-confianÃ§a)
+- [Boas prÃ¡ticas & Troubleshooting](#boas-prÃ¡ticas--troubleshooting)
 
 ---
 
 ## Arquitetura (resumo + diagrama)
 
-**Fluxo alto nível:**
-1. O usuário chama `POST /query` com sua pergunta.
-2. A API verifica o cache **Redis** para uma resposta existente. Se encontrada (HIT), retorna imediatamente.
-3. Se não houver cache (MISS), a API (opcionalmente) faz triagem de intenção.
-4. **Rota Lexical** (prioritária): busca por sentenças que batem com termos da pergunta (com **bônus** se a fonte pertencer a um **departamento** citado). Se for suficiente, responde.
-5. **Rota Vetorial** (fallback/forçada): gera **multi-queries**, consulta **FAISS**, **reranqueia** com **CrossEncoder** e calcula uma **confiança**. Se for suficiente, responde.
-6. O **Agente** (LangGraph) pode orquestrar o fluxo, tentando **AUTO_RESOLVER** ou **PEDIR_INFO**.
-7. A resposta final é salva no cache **Redis** antes de ser retornada ao usuário.
+**Fluxo alto nÃ­vel:**
+1. O usuÃ¡rio chama `POST /query` com sua pergunta.
+2. A API verifica o cache **Redis** para uma resposta existente. Se houver HIT, retorna imediatamente.
+3. Se nÃ£o houver cache (MISS), a API pode acionar o LLM de triagem para decidir o prÃ³ximo passo.
+4. **Rota Lexical**: busca por sentenÃ§as que batem com termos/sinÃ´nimos (com bÃ´nus por departamento); se bastar, responde direto.
+5. **Rota Vetorial**: gera *multi-queries* (`terms.yml`), consulta FAISS, reranqueia com CrossEncoder e calcula a confianÃ§a.
+6. O **Agente** (LangGraph) orquestra as aÃ§Ãµes (`AUTO_RESOLVER` x `PEDIR_INFO`) e grava a resposta final no cache antes de retornÃ¡-la.
 
-### Diagrama (Mermaid)
+> Diagrama detalhado: veja tambÃ©m **ARCHITECTURE.md** (inclui invalidaÃ§Ã£o de cache no ETL).
 
 ```mermaid
 flowchart LR
     subgraph Client
-      U[Usuário]
+      U[UsuÃ¡rio]
     end
     subgraph API
       A[Flask API<br/>/query]
@@ -45,13 +45,13 @@ flowchart LR
     subgraph Retrieval
       VS[(FAISS Index)]
       EMB[HF Embeddings]
-      MQ[Multi-Query<br/> + Sinônimos]
-      LEX["Busca Lexical<br/>(sentenças + bônus de depto)"]
+      MQ[Multi-Query<br/> + SinÃ´nimos]
+      LEX["Busca Lexical<br/>(sentenÃ§as + bÃ´nus de depto)"]
       RER[CrossEncoder<br/>(Reranker)]
     end
     subgraph LLM
       TRI[LLM Triagem]
-      GEN[LLM Geração de Resposta]
+      GEN[LLM GeraÃ§Ã£o de Resposta]
     end
     subgraph ETL
       LD[Loaders<br/>(pdf, docx, md, txt, code, ...)]
@@ -59,15 +59,23 @@ flowchart LR
       EMB_E[HF Embeddings]
       VS_B[FAISS Build/Update]
       DB[(PostgreSQL<br/>hashes/chunks)]
+      C_ETL[(Redis Cache)]
+    end
+    subgraph Agent
+      TG[Triagem]
+      AR[Auto Resolver<br/>(chama RAG)]
+      PD[Pedir Info]
     end
 
     U -->|Pergunta| A
     A -->|1. Cache?| C
     C -->|HIT| A
     C -->|MISS| TRI
-    A -->|triagem opcional| TRI
 
-    TRI --> AR[Auto Resolver]
+    TRI -->|aÃ§Ã£o| TG
+    TG -->|AUTO_RESOLVER| AR
+    TG -->|PEDIR_INFO| PD
+
     AR -->|Rota 1| LEX
     LEX -->|se encontrou| GEN
     AR -->|Rota 2| MQ --> VS --> RER --> GEN
@@ -80,6 +88,9 @@ flowchart LR
     LD --> SPL --> EMB_E --> VS_B --> VS
     VS_B --> DB
     DB -->|incremental| VS_B
+
+    %% InvalidaÃ§Ã£o de Cache no ETL
+    VS_B --> C_ETL
 ```
 
 ---
@@ -88,83 +99,162 @@ flowchart LR
 
 - Python 3.10+ (recomendado)
 - Docker e Docker Compose
-- Redis
-- FAISS (via LangChain/FAISS) + HuggingFace Embeddings
-- Chaves de LLM (Gemini/OpenAI) se for usar geração/triagem
+- Redis (para cache de respostas)
+- FAISS (via LangChain/FAISS) + embeddings HuggingFace
+- Chaves de LLM (Gemini/OpenAI) se for usar triagem/geraÃ§Ã£o
 
-Instale dependências (exemplo):
+> O `requirements.txt` jÃ¡ inclui `langchain-huggingface` (LangChain 0.2+) e fixa `sentencepiece==0.2.0` para evitar o crash `free(): double free` em ambientes CUDA.
+
+Instale dependÃªncias (exemplo):
 ```bash
 pip install -r requirements.txt
 ```
 
 ---
 
-## Configuração (.env)
+## ConfiguraÃ§Ã£o (.env)
 
-Crie um `.env` baseado em `.env.example`. Principais chaves:
+Crie um `.env` a partir de `.env.example`. Principais chaves:
 
 ```env
 # Modelos
 EMBEDDINGS_MODEL=intfloat/multilingual-e5-large
+CROSS_ENCODER=jinaai/jina-reranker-v2-base-multilingual
 
-# ... (outras configurações de RAG)
+# Limiar de resposta segura
+CONFIDENCE_MIN=0.32
+REQUIRE_CONTEXT=true
+
+# ExecuÃ§Ã£o
+ROUTE_FORCE=auto   # auto | vector
+TOP_K=6
+PER_QUERY=4
 
 # Provedores LLM (opcional)
+OPENAI_API_KEY=...
 GEMINI_API_KEY=...
 
-# Cache (opcional, mas recomendado)
+# Cache
 REDIS_HOST=localhost
 REDIS_PORT=6379
 CACHE_TTL_SECONDS=86400
 ```
 
+> O ETL e a API leem `EMBEDDINGS_MODEL` do mesmo `.env`, garantindo que o Ã­ndice e o runtime usem embeddings compatÃ­veis.
+
 ---
 
-## Executando o ETL (build do índice)
+## Executando o ETL (build do Ã­ndice)
 
-O ETL agora também limpa o cache do Redis para garantir que as respostas não fiquem desatualizadas após uma atualização da base de conhecimento.
+1. Coloque seus arquivos em `./data/` (pdf, docx, md, txt, csv, json, cÃ³digo, etc.).
+2. Rode o build completo:
+   ```bash
+   python etl_orchestrator.py --rebuild
+   ```
+   ou use `python etl_build_index.py` para o fluxo simplificado.
+3. O Ã­ndice fica em `./vector_store/faiss_index`.
+4. Para uma atualizaÃ§Ã£o incremental:
+   ```bash
+   python etl_orchestrator.py update
+   ```
+5. Ao final de um rebuild/update, o orquestrador limpa o cache Redis (`rag_query:*`) para evitar dados defasados.
+
+> No compose GPU (`docker-compose.gpu.yml`), o serviÃ§o `ai_etl` roda em CPU (`CUDA_VISIBLE_DEVICES=""`). Execute `docker compose -f docker-compose.gpu.yml run --rm ai_etl python3 -u scripts/etl_build_index.py` para reconstruir dentro do container.
 
 ---
 
 ## Subindo a API
 
-Via Docker Compose (recomendado):
+Via Python (desenvolvimento):
 ```bash
-docker-compose -f docker-compose.cpu.yml up --build
+flask --app api run --host 0.0.0.0 --port 5000
 ```
 
-Endpoints úteis:
-- `POST /query` — consulta RAG (com cache)
-- `GET /healthz` — health/readiness (inclui status do Redis)
-- `GET /metrics` — contadores simples (inclui hits de cache)
+Via Docker Compose:
+```bash
+docker compose -f docker-compose.cpu.yml up --build
+```
+
+Endpoints Ãºteis:
+- `POST /query` â€” consulta RAG + cache
+- `GET /healthz` â€” health/readiness (inclui FAISS/LLM/Redis)
+- `GET /metrics` â€” contadores simples (queries, cache hits, erros)
+- `GET /debug/dict` e `GET /debug/env` â€” checagens rÃ¡pidas de dicionÃ¡rios e variÃ¡veis
+
+---
+
+## Testes rÃ¡pidos (Smoke)
+
+- `./scripts/smoke_cpu.sh` â€” valida o stack CPU.
+- `./scripts/smoke_gpu.sh` â€” valida o stack GPU (adicione `--with-etl` para regerar o Ã­ndice antes dos testes).
+
+Ambos verificam healthz, fazem consultas com `debug=true` e destacam problemas comuns em FAISS, reranker ou GPU.
 
 ---
 
 ## Consultas & Debug
 
-Uma resposta vinda do cache incluirá o cabeçalho `"X-Cache-Status": "hit"`.
+Exemplo de chamada com debug:
+```bash
+curl -s -H "Content-Type: application/json" \
+  -d '{"question":"onde encontro informaÃ§Ã£o de monitoria de computaÃ§Ã£o?","debug":true}' \
+  http://localhost:5000/query | jq
+```
+
+Campos Ãºteis no `debug`:
+- `route`: `"lexical"` ou `"vector"`
+- `mq_variants`: queries geradas com sinÃ´nimos do `terms.yml`
+- `faiss.candidates[*].score`: similaridade vinda do FAISS (quando disponÃ­vel)
+- `rerank.enabled`: indica se o CrossEncoder foi carregado
+- `rerank.scored[*].score`: score **0â€“1** do CrossEncoder (ordenaÃ§Ã£o final)
+- `confidence`: mÃ¡ximo dos scores reranqueados (apÃ³s normalizaÃ§Ã£o, se houver)
+
+Respostas vindas do cache trazem o campo `"X-Cache-Status": "hit"` no corpo JSON.
 
 ---
 
-## Avaliação de Qualidade (RAGAs)
+## AvaliaÃ§Ã£o de Qualidade (RAGAs)
 
-O projeto inclui um framework de avaliação automatizado usando a biblioteca `ragas`. Para usá-lo, prepare o arquivo `evaluation_dataset.jsonl` e execute:
+O projeto inclui um pipeline de avaliaÃ§Ã£o automatizada com `ragas`. Prepare `evaluation_dataset.jsonl` e execute:
 
 ```bash
 python tools/evaluate.py
 ```
 
-O script imprimirá um relatório com métricas de `faithfulness`, `answer_relevancy`, `context_recall`, e `context_precision`.
+O relatÃ³rio retorna mÃ©tricas de `faithfulness`, `answer_relevancy`, `context_recall` e `context_precision` para acompanhar a qualidade do RAG.
 
 ---
 
-## Boas práticas & Troubleshooting
+## Como funcionam os "pesos" e a confianÃ§a
 
-- **Cache de Respostas**: O sistema utiliza Redis para cachear respostas de perguntas frequentes, reduzindo drasticamente a latência e o custo em consultas repetidas.
-- **Alinhar Embeddings**: garanta que ETL **e** API usem o **mesmo** `EMBEDDINGS_MODEL`.
-- **Observabilidade**: verifique `healthz`, counters/metrics e use `debug=true`.
+### Rota Lexical
+- ExtraÃ­mos **termos candidatos** (palavras alfanumÃ©ricas â‰¥3, e-mails; stopwords sÃ£o ignoradas).
+- Procuramos **sentenÃ§as** que batem forte (fuzzy/regex). Cada acerto soma pontos para o documento.
+- Se a **fonte** do documento condiz com um **departamento** citado (via `terms.yml`), aplicamos um **bÃ´nus** (ex.: `+8`).
+- Havendo hits suficientes, a resposta sai **sem** reranker (scores podem aparecer como `0.0` por design).
+
+### Rota Vetorial (FAISS + Reranker)
+- Geramos *multi-queries* com sinÃ´nimos/aliases (`terms.yml`) para ampliar a cobertura.
+- Recuperamos candidatos no FAISS e registramos seus `score`s (quando disponÃ­veis).
+- Aplicamos CrossEncoder (0â€“1) para ordenar por relevÃ¢ncia contextual.
+- **ConfianÃ§a (`confidence`)** = **mÃ¡ximo** dos scores do reranker. Se `confidence >= CONFIDENCE_MIN` **e** `REQUIRE_CONTEXT=true`, respondemos como â€œcontexto suficienteâ€.
+
+> Ajuste `CONFIDENCE_MIN` para respostas mais **conservadoras** (maior) ou mais **falantes** (menor).
 
 ---
 
-## Licença
-MIT (ou a de sua preferência).
+## Boas prÃ¡ticas & Troubleshooting
+
+- **Cache de Respostas**: Redis reduz latÃªncia e custo em perguntas recorrentes; certifique-se de invalidar apÃ³s ETL.
+- **Alinhar Embeddings**: ETL e API devem usar o mesmo `EMBEDDINGS_MODEL`.
+- **Tamanho dos chunks**: ajuste chunk size/overlap para equilibrar recall x precisÃ£o.
+- **SinÃ´nimos atualizados**: mantenha `terms.yml` com aliases relevantes; remova termos ambÃ­guos.
+- **Observabilidade**: use `/healthz`, `/metrics` e `debug=true` para diagnÃ³sticos rÃ¡pidos.
+- **Rota forÃ§ada**: `ROUTE_FORCE=vector` ajuda a depurar FAISS/reranker sem interferÃªncia lexical.
+- **Qualidade dos dados**: normalize fontes, remova duplicatas e preencha metadados; isso melhora o rerank.
+- **Compose GPU**: no stack GPU, `ai_etl` roda em CPU (`sentencepiece==0.2.0`). Se ver `free(): double free`, refaÃ§a build com `--no-cache`.
+
+---
+
+## LicenÃ§a
+MIT (ou a de sua preferÃªncia).
