@@ -8,9 +8,58 @@ o tratamento de erros.
 """
 import os
 import json
-from typing import List
+import sys
+from importlib import import_module
+from pathlib import Path
+from typing import List, Optional
 
 from langchain_core.documents import Document
+
+try:
+    from text_normalizer import normalize_documents
+except ModuleNotFoundError:
+    project_root = Path(__file__).resolve().parent.parent
+    if str(project_root) not in sys.path:
+        sys.path.insert(0, str(project_root))
+    normalize_documents = import_module('text_normalizer').normalize_documents
+
+
+def _extract_leading_url(text: str) -> Optional[str]:
+    """Retorna a primeira URL (http/https) presente no início do texto."""
+    if not text:
+        return None
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        if line.lower().startswith(("http://", "https://")):
+            return line
+        # encontrou texto não vazio antes de uma URL => aborta
+        break
+    return None
+
+
+def _finalize_docs(docs: List[Document], file_path: str) -> List[Document]:
+    docs = normalize_documents(docs)
+    if not docs:
+        return docs
+
+    url = None
+    for doc in docs:
+        cand = _extract_leading_url(doc.page_content or "")
+        if cand:
+            url = cand
+            break
+
+    for doc in docs:
+        meta = doc.metadata or {}
+        if file_path:
+            meta.setdefault("source", file_path)
+        if url:
+            meta.setdefault("url", url)
+        doc.metadata = meta
+
+    return docs
 
 # --- Funções de Carregamento Customizadas (para CSV e JSON) ---
 
@@ -84,43 +133,50 @@ def load_document(file_path: str) -> List[Document]:
         if file_ext == ".pdf":
             from langchain_community.document_loaders import UnstructuredPDFLoader
             loader = UnstructuredPDFLoader(file_path, mode="single")
-            return loader.load()
+            docs = loader.load()
+            return _finalize_docs(docs, file_path)
 
         # Loader para DOCX
         elif file_ext == ".docx":
             from langchain_community.document_loaders import Docx2txtLoader
             loader = Docx2txtLoader(file_path)
-            return loader.load()
+            docs = loader.load()
+            return _finalize_docs(docs, file_path)
 
         # Loader para Markdown
         elif file_ext == ".md":
             from langchain_community.document_loaders import UnstructuredMarkdownLoader
             loader = UnstructuredMarkdownLoader(file_path)
-            return loader.load()
+            docs = loader.load()
+            return _finalize_docs(docs, file_path)
 
         # Loader para TXT e formatos de código (com fallback de encoding)
         elif file_ext in [".txt", ".php", ".sql", ".xml", ".ini", ".config", ".example", ".yml", ".yaml"]:
             from langchain_community.document_loaders import TextLoader
             try:
                 loader = TextLoader(file_path, encoding='utf-8')
-                return loader.load()
+                docs = loader.load()
+                return _finalize_docs(docs, file_path)
             except Exception:
                 # Fallback para latin-1 se UTF-8 falhar
                 print(f"WARN: Falha ao carregar {file_path} com UTF-8. Tentando com 'latin-1'.")
                 loader = TextLoader(file_path, encoding='latin-1')
-                return loader.load()
+                docs = loader.load()
+                return _finalize_docs(docs, file_path)
 
         # Loader customizado para CSV (converte para Markdown)
         elif file_ext == ".csv":
             text_content = _read_csv_to_markdown(file_path)
             metadata = {"source": file_path}
-            return [Document(page_content=text_content, metadata=metadata)]
+            docs = [Document(page_content=text_content, metadata=metadata)]
+            return _finalize_docs(docs, file_path)
 
         # Loader customizado para JSON (converte para texto achatado)
         elif file_ext == ".json":
             text_content = _read_json_to_flat_text(file_path)
             metadata = {"source": file_path}
-            return [Document(page_content=text_content, metadata=metadata)]
+            docs = [Document(page_content=text_content, metadata=metadata)]
+            return _finalize_docs(docs, file_path)
 
         else:
             # Se a extensão não for reconhecida, imprime um aviso mas não quebra o processo

@@ -86,6 +86,8 @@ O primeiro build pode demorar alguns minutos. Após a inicialização, os seguin
 - **Interface Web (UI):** `http://localhost:8080`
 - **Banco de Dados (Postgres):** `localhost:5432`
 
+> **Dica:** a interface web (porta 8080) encaminha qualquer chamada para `/api/...` ao mesmo serviço Flask na porta 5000. Exemplos: `http://localhost:5000/query` (direto) e `http://localhost:8080/api/query` (via UI).
+
 ---
 
 ## Endpoints da API
@@ -93,6 +95,7 @@ O primeiro build pode demorar alguns minutos. Após a inicialização, os seguin
 ### Endpoint Principal do Agente
 
 - **URL:** `POST /agent/ask`
+- **Alias:** `POST /api/ask` (exposto pelo proxy da UI em `http://localhost:8080`)
 - **Descrição:** Processa uma pergunta usando o fluxo completo do agente LangGraph. Suporta histórico de conversa.
 - **Payload (JSON):**
   ```json
@@ -108,26 +111,29 @@ O primeiro build pode demorar alguns minutos. Após a inicialização, os seguin
 ### Endpoint Legado (RAG Direto)
 
 - **URL:** `POST /query`
+- **Alias:** `POST /api/query` (quando acessado via Nginx/porta 8080)
 - **Descrição:** Processa uma pergunta usando apenas o pipeline de RAG direto, sem a camada do agente.
+
+Ambos os endpoints retornam o campo opcional `"needs_clarification"` quando o sistema encontra múltiplos candidatos (ex.: pessoas com o mesmo nome). Isso gera uma resposta enumerando as opções disponíveis e incrementa o contador `queries_ambiguous` em `/metrics`.
 
 ---
 
 ## Avaliação do Sistema
 
-O projeto inclui um script de avaliação de ponta a ponta que utiliza a biblioteca `ragas`.
+O projeto inclui um script de avaliação de ponta a ponta que usa `ragas` e `langchain-google-genai` para calcular métricas automáticas.
 
-1.  **Garanta que a API esteja em execução.**
-2.  Execute o script `eval_rag.py`, passando o caminho para um arquivo CSV com os dados de teste.
+1.  Garanta que as dependências estejam instaladas (`pip install -r requirements-cpu.txt`) e que a variável `GOOGLE_API_KEY` esteja configurada no ambiente.
+2.  Inicie a API localmente (Docker Compose ou ambiente manual).
+3.  Execute o script `eval_rag.py`, informando o dataset via argumento posicional ou pelo flag `--dataset`.
 
 ```bash
-# Exemplo de execução
-python eval_rag.py tests/eval_sample.csv
+# Exemplo de execução com saída em reports/
+python eval_rag.py --dataset tests/eval_sample.csv --out reports/
 ```
 
-O script irá calcular e exibir métricas de **Recuperação** (Recall, MRR, nDCG) e de **Geração** (Faithfulness, Answer Relevancy).
+Use `--agent-endpoint` e `--legacy-endpoint` para apontar para URLs específicas quando necessário.
 
----
-
+O relatório consolida métricas de **Recuperação** (Recall, MRR, nDCG). Quando a chave `GOOGLE_API_KEY` está definida, o script também produz as métricas de **Geração** (Faithfulness e Answer Relevancy) via RAGAs.
 ## Executando os Testes
 
 O projeto utiliza `pytest` para testes automatizados. Para executar a suíte de testes:
@@ -208,4 +214,31 @@ Para aumentar a relevância e a confiança das respostas, as seguintes ações s
         python eval_rag.py --compare --label "nome-do-experimento"
         ```
 
-Para um roteiro mais detalhado de melhorias planejadas, consulte o documento [melhorias.md](./melhorias.md).
+Para um roteiro mais detalhado de melhorias planejadas, consulte o documento [melhorias.md](docs/melhorias.md).
+
+
+
+## Documentação adicional
+
+Toda a documentação complementar foi movida para a pasta docs/:
+
+- [Visão de arquitetura](docs/ARCHITECTURE.md)
+- [Contexto operacional](docs/contexto.md)
+- [Plano de melhorias e backlog](docs/melhorias.md)
+- [Telemetria e observabilidade](docs/TELEMETRY.md)
+- [Publicação de imagens Docker](docs/publish_images.md)
+
+### Imagens pré-construídas (opcional)
+
+Resumo rápido:
+1. Faça login no registry (ex.: docker login, docker login ghcr.io).
+2. Rode ./scripts/build_and_publish_images.sh --prefix SEU_PREFIXO --tag SUA_TAG --push.
+3. Configure as variáveis RAG_IMAGE_PREFIX e RAG_IMAGE_TAG (via shell ou arquivo .env).
+4. Depois execute docker-compose pull + docker-compose up para usar as imagens publicadas.
+
+Para o passo a passo completo consulte [docs/publish_images.md](docs/publish_images.md).
+Observação: o script gera imagens para ai_projeto_api e ai_etl. A UI continua usando nginx:1.27-alpine e não precisa de push.
+
+
+
+

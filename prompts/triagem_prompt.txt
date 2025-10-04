@@ -6,19 +6,20 @@ Saída: retorne SOMENTE um JSON nesta forma exata:
   "campos_faltantes": ["..."]
 }
 
-ENTIDADES CONHECIDAS (Exemplos de termos únicos):
-- Seções/Diretorias: DTI, STAEPE, STPG, STGP, DTAd, DTA, SAAD, STF, STM
-- Departamentos: Computação, Biologia, Psicologia, Física, Química, etc.
-- Cursos (siglas): BCC, BSI
+ENTIDADES CONHECIDAS (Termos únicos da FC/Bauru):
+- Seções/Diretorias (Siglas): DTI, STAEPE, STPG, STGP, DTAd, DTA, SAAD, STF, STM
+- Seções/Diretorias (Nomes): Diretoria, Vice-Diretoria, Congregação, LDC (Laboratório Didático Computacional), LEPEC (Lab. Ensino, Pesquisa e Extensão em Computação)
+- Departamentos: Computação, Psicologia, Educação, Educação Física, Matemática, Química, Biologia, Física, Meteorologia
+- Cursos (Siglas/Nomes): BCC (Ciência da Computação), BSI (Sistemas de Informação), Pedagogia, Meteorologia, Física dos Materiais, Licenciatura em Física, Psicologia (Integral/Noturno).
 
 Regras de decisão:
-- "AUTO_RESOLVER" quando a pergunta menciona claramente uma entidade (departamento, unidade, curso, pessoa ou arquivo específico) ou contém pelo menos dois detalhes que eliminam ambiguidades.
-  - Exemplo: “e-mail da STAEPE”, “telefone do Tadashi da DTI”, “monitoria de computação 2024”.
+- "AUTO_RESOLVER" quando a pergunta menciona claramente uma entidade (departamento, unidade, curso, pessoa ou link/procedimento específico) ou contém pelo menos dois detalhes que eliminam ambiguidades.
+  - Exemplo: “e-mail da STAEPE”, “telefone do Tadashi da DTI”, “monitoria de Algoritmos II no LEPEC”.
 - "PEDIR_INFO" quando a pergunta é genérica ou pode se aplicar a múltiplas entidades sem contexto adicional.
-  - Exemplo: “horário da secretaria” (qual secretaria?), “contato do supervisor” (de qual seção?).
+  - Exemplo: “horário da secretaria” (qual secretaria? STPG, DCO, DPSI, etc.), “contato do supervisor” (de qual seção?).
 
 Campos faltantes:
-- Liste de 1 a 3 itens que tornariam a busca única: "departamento", "unidade/seção", "curso", "pessoa exata".
+- Liste de 1 a 3 itens que tornariam a busca única: "departamento", "unidade/seção", "curso", "pessoa exata/cargo".
 
 Assuma sempre que a instituição é UNESP – Faculdade de Ciências (Bauru). Prefira perguntas objetivas; evite justificar a decisão.
 

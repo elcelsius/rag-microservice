@@ -1,9 +1,12 @@
 # Dockerfile.gpu
-# Fluxo multi-stage para executar o microsserviço RAG com suporte a GPU (CUDA 12.1).
+# Fluxo multi-stage para executar o microsserviço RAG com suporte a GPU (CUDA 12.4).
 
 FROM python:3.11-slim AS builder
 
 WORKDIR /app
+
+# Ajusta repositórios para https (evita bloqueios de rede http)
+RUN sed -i "s|http://deb.debian.org|https://deb.debian.org|g; s|http://security.debian.org|https://security.debian.org|g" /etc/apt/sources.list.d/debian.sources
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential git curl \
@@ -15,9 +18,16 @@ ENV PATH="${VENV_PATH}/bin:$PATH"
 ENV HF_HOME=/opt/hf-cache
 
 # Atualiza pip e instala PyTorch com CUDA antes das demais dependências.
+ARG PYTORCH_INDEX_URL=https://download.pytorch.org/whl/nightly/cu126
+ARG TORCH_VERSION=2.10.0.dev20251003+cu126
+ARG TORCHVISION_VERSION=0.25.0.dev20251003+cu126
+ARG TORCHAUDIO_VERSION=2.8.0.dev20251003+cu126
+
 RUN pip install --no-cache-dir --upgrade pip \
- && pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cu121 \
-    torch torchvision torchaudio
+ && pip install --no-cache-dir --pre --index-url "${PYTORCH_INDEX_URL}" \
+      torch=="${TORCH_VERSION}" \
+      torchvision=="${TORCHVISION_VERSION}" \
+      torchaudio=="${TORCHAUDIO_VERSION}"
 
 COPY requirements.txt requirements-gpu.txt ./
 RUN pip install --no-cache-dir -r requirements-gpu.txt \
@@ -46,6 +56,7 @@ COPY api.py ./
 COPY agent_workflow.py ./
 COPY llm_client.py ./
 COPY query_handler.py ./
+COPY text_normalizer.py ./
 COPY telemetry.py ./
 COPY triage.py ./
 COPY etl_orchestrator.py ./

@@ -24,6 +24,7 @@ services:
 
   # Serviço de ETL (Extract, Transform, Load)
   ai_etl:
+    image: ${RAG_IMAGE_PREFIX:-rag-microservice}-ai_etl:${RAG_IMAGE_TAG:-local}
     build:
       context: .
       dockerfile: Dockerfile.cpu
@@ -48,6 +49,7 @@ services:
 
   # Serviço da API principal
   ai_projeto_api:
+    image: ${RAG_IMAGE_PREFIX:-rag-microservice}-ai_projeto_api:${RAG_IMAGE_TAG:-local}
     build:
       context: .
       dockerfile: Dockerfile.cpu
@@ -96,3 +98,9 @@ services:
 volumes:
   pgdata:
   vector_store:
+
+
+
+
+
+

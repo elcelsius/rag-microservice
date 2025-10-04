@@ -5,6 +5,9 @@ FROM python:3.11-slim AS builder
 
 WORKDIR /app
 
+# Ajusta repositórios para https (evita bloqueios de rede http)
+RUN sed -i "s|http://deb.debian.org|https://deb.debian.org|g; s|http://security.debian.org|https://security.debian.org|g" /etc/apt/sources.list.d/debian.sources
+
 # Dependências necessárias apenas em build-time.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential git curl \
@@ -46,6 +49,7 @@ COPY api.py ./
 COPY agent_workflow.py ./
 COPY llm_client.py ./
 COPY query_handler.py ./
+COPY text_normalizer.py ./
 COPY telemetry.py ./
 COPY triage.py ./
 COPY etl_orchestrator.py ./

@@ -5,6 +5,8 @@ from collections import Counter
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from langchain_core.messages import HumanMessage, AIMessage
+from langchain_community.vectorstores import FAISS
+from langchain_huggingface import HuggingFaceEmbeddings
 
 # --- Importações dos Módulos da Aplicação ---
 # Tenta importar o cliente LLM de forma lazy. Se falhar, define como None.
@@ -16,6 +18,7 @@ except ImportError:
 # Importa a função de RAG direto e a função de execução do agente.
 from query_handler import answer_question
 from agent_workflow import run_agent
+from text_normalizer import normalize_documents
 
 # --- Variáveis de Estado de Prontidão ---
 APP_READY = False
@@ -45,8 +48,6 @@ def _initialize_models():
     """Carrega o modelo de embeddings e o índice FAISS na memória."""
     global embeddings_model, vectorstore, FAISS_OK, APP_READY
     try:
-        from langchain_community.embeddings import HuggingFaceEmbeddings
-        from langchain_community.vectorstores import FAISS
 
         print(f"[API] Carregando modelo de embeddings: {EMBEDDINGS_MODEL}", flush=True)
         embeddings_model = HuggingFaceEmbeddings(model_name=EMBEDDINGS_MODEL)
@@ -59,6 +60,11 @@ def _initialize_models():
                 allow_dangerous_deserialization=True
             )
             print("[API] FAISS carregado com sucesso.", flush=True)
+            try:
+                normalize_documents(getattr(vectorstore.docstore, "_dict", {}).values())
+                print("[API] Documentos normalizados para remoção de mojibake.", flush=True)
+            except Exception as exc:
+                print(f"[API] WARN: falha ao normalizar documentos: {exc}", flush=True)
             FAISS_OK = True
         else:
             print("[API] WARN: Diretório do FAISS não encontrado. A busca não funcionará.", flush=True)
@@ -106,6 +112,31 @@ def healthz():
     code = 200 if status["ready"] else 503
     return jsonify(status), code
 
+@app.get("/debug/dict")
+def debug_dict():
+    try:
+        from query_handler import DEPARTMENTS, ALIASES, SYNONYMS, BOOSTS
+        return {
+            "departments": DEPARTMENTS,
+            "aliases_keys": list(ALIASES.keys()),
+            "synonyms_keys": list(SYNONYMS.keys()),
+            "boosts": BOOSTS,
+        }, 200
+    except Exception as exc:
+        return {"error": str(exc)}, 500
+
+@app.get("/debug/env")
+def debug_env():
+    keys = [
+        "TERMS_YAML",
+        "FAISS_STORE_DIR",
+        "EMBEDDINGS_MODEL",
+        "RERANKER_ENABLED", "RERANKER_NAME",
+        "MQ_ENABLED", "MQ_VARIANTS",
+        "CONFIDENCE_MIN", "REQUIRE_CONTEXT",
+    ]
+    return {k: os.getenv(k) for k in keys}, 200
+
 @app.get("/metrics")
 def metrics():
     uptime = time.time() - START_TS
@@ -152,6 +183,12 @@ def query():
     return jsonify(res)
 
 # --- NOVO ENDPOINT PARA O AGENTE ---
+
+@app.post("/api/ask")
+def api_ask():
+    """Alias compatível que reutiliza a lógica do /query."""
+    return query()
+
 @app.post("/agent/ask")
 def agent_ask():
     """Endpoint principal que utiliza o fluxo do agente com LangGraph."""

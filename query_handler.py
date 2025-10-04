@@ -15,10 +15,11 @@ import yaml  # requer PyYAML
 from typing import Any, Dict, List, Tuple, Optional, Iterable, Set
 from rapidfuzz import fuzz, distance
 from langchain_community.vectorstores import FAISS
-from langchain_community.embeddings import HuggingFaceEmbeddings
+from langchain_huggingface import HuggingFaceEmbeddings
 from langchain.schema import Document
 from llm_client import load_prompt, call_llm
 from telemetry import log_event
+from text_normalizer import normalize_text, normalize_documents
 
 try:
     from sentence_transformers import CrossEncoder  # reranker
@@ -161,7 +162,7 @@ def _collect_citations_from_docs(docs, max_sources=MAX_SOURCES):
     cites = []
     for d in docs or []:
         meta = getattr(d, "metadata", {}) or {}
-        source = meta.get("source") or meta.get("file") or "desconhecido"
+        source = meta.get("url") or meta.get("source") or meta.get("file") or "desconhecido"
         chunk = meta.get("chunk") or 1
         preview = (getattr(d, "page_content", "") or "").strip().replace("\\n", " ")
         if len(preview) > 200:
@@ -578,6 +579,7 @@ _WS = re.compile(r"\s+")  # Regex para normalizar espaços em branco
 EMAIL_RE = re.compile(r"[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}", re.IGNORECASE)  # Regex para encontrar e-mails
 PHONE_RE = re.compile(r"\(?\d{2}\)?\s?\d{4,5}-\d{4}")  # Regex para encontrar números de telefone
 WORD_RE = re.compile(r"[A-Za-zÀ-ÖØ-öø-ÿ]+")  # Regex para encontrar palavras (letras acentuadas incluídas)
+PERSON_BLOCK_SPLIT = re.compile(r"\n\s*\n+")
 
 # Palavras de parada (stopwords) comuns em português, usadas para filtrar termos de busca.
 STOP = {
@@ -601,6 +603,25 @@ def _strip_accents_lower(s: str) -> str:
 def _tokenize_letters(text: str) -> List[str]:
     """Tokeniza um texto, extraindo apenas sequências de letras como palavras."""
     return WORD_RE.findall(text or "")
+
+
+def _person_block(text: str, name_term: Optional[str]) -> Optional[str]:
+    """Extrai o bloco textual referente a uma pessoa (linhas separadas por espaços)."""
+    if not text:
+        return None
+    variants = []
+    if name_term:
+        for candidate in [name_term, *_term_variants(name_term)]:
+            norm = _strip_accents_lower(candidate)
+            if norm and norm not in variants:
+                variants.append(norm)
+    if not variants:
+        return None
+    for segment in PERSON_BLOCK_SPLIT.split(text):
+        seg_norm = _strip_accents_lower(segment)
+        if any(v in seg_norm for v in variants):
+            return _norm_ws(segment)
+    return None
 
 
 def _guess_dept_from_source(src: str) -> Optional[str]:
@@ -749,7 +770,12 @@ def _extract_contacts(texts: List[str]) -> Dict[str, List[str]]:
 
 def _extract_name(snippets: List[str], term: str) -> Optional[str]:
     """Extrai um nome completo de uma lista de snippets de texto, com base em um termo de busca."""
-    tnorm = _strip_accents_lower(term or "")
+    variants: List[str] = []
+    if term:
+        for candidate in [term, *_term_variants(term)]:
+            norm = _strip_accents_lower(candidate)
+            if norm and norm not in variants:
+                variants.append(norm)
     for s in snippets:
         cands = NAME_SEQ_RE.findall(s or "")
         if not cands:
@@ -757,16 +783,20 @@ def _extract_name(snippets: List[str], term: str) -> Optional[str]:
         best, best_sim = None, 0.0
         for cand in cands:
             for tk in _tokenize_letters(cand):
-                sim = distance.Levenshtein.normalized_similarity(_strip_accents_lower(tk), tnorm)
-                if sim > best_sim:
-                    best_sim = sim
-                    best = cand
-        if best and best_sim >= 0.82:
+                token_norm = _strip_accents_lower(tk)
+                targets = variants or [token_norm]
+                for tgt in targets:
+                    sim = distance.Levenshtein.normalized_similarity(token_norm, tgt)
+                    if sim > best_sim:
+                        best_sim = sim
+                        best = cand
+        if best and (best_sim >= 0.85 if variants else best_sim >= 0.80):
             return best
-    for s in snippets:
-        cands = NAME_SEQ_RE.findall(s or "")
-        if cands:
-            return cands[0]
+    if not variants:
+        for s in snippets:
+            cands = NAME_SEQ_RE.findall(s or "")
+            if cands:
+                return cands[0]
     return None
 
 
@@ -1012,7 +1042,10 @@ def _perform_vector_search(question: str, vectorstore: FAISS, dbg: dict) -> List
     cands = []
     for query_variant in queries:
         try:
-            hits = vectorstore.similarity_search_with_score(query_variant, k=per_q)
+            hits_raw = vectorstore.similarity_search_with_score(query_variant, k=per_q)
+            hits = [(doc, score) for doc, score in hits_raw]
+            docs_only = [doc for doc, _ in hits]
+            normalize_documents(docs_only)
             for doc, score in hits:
                 try:
                     dist = float(score)
@@ -1153,8 +1186,131 @@ def _finalize_result(question: str, docs: List[Document], conf: float, dbg: dict
     return result
 
 
+def _people_candidates_from_hits(question: str, lex_hits: list) -> List[Dict[str, Any]]:
+    """Aggregate possible person matches from lexical hits for disambiguation."""
+    if not lex_hits:
+        return []
+
+    name_terms = [t for t in _candidate_terms(question) if t.isalpha()]
+    primary_term = name_terms[0] if name_terms else ""
+
+    buckets: Dict[Tuple[str, str], Dict[str, Any]] = {}
+    for doc, hits, score in lex_hits:
+        doc_text = getattr(doc, "page_content", "") or ""
+        snippets = [s for s, _ in hits[:3]]
+        if doc_text and not snippets:
+            snippets = [_norm_ws(doc_text[:320])]
+
+        name = _extract_name(snippets, primary_term) if snippets else None
+        if not name and doc_text:
+            name = _extract_name([doc_text], primary_term) if primary_term else None
+
+        block = _person_block(doc_text, name or primary_term)
+        if block:
+            snippets = [block]
+        elif name:
+            window = _context_window_around_name(doc_text, name, 100, 200)
+            if window:
+                snippets = [window]
+
+        meta = getattr(doc, "metadata", {}) or {}
+        dept = _guess_dept_from_source(meta.get("source"))
+
+        contacts = _extract_contacts(snippets)
+        if not name:
+            if primary_term:
+                continue
+            if not contacts["phones"] and not contacts["emails"]:
+                continue
+        elif primary_term:
+            tokens_norm = [_strip_accents_lower(tk) for tk in _tokenize_letters(name)]
+            target = _strip_accents_lower(primary_term)
+            if all(distance.Levenshtein.normalized_similarity(tn, target) < 0.9 for tn in tokens_norm):
+                continue
+
+        key_name = _strip_accents_lower(name or meta.get("source") or "")
+        key = (key_name, dept or "")
+
+        source_val = meta.get("url") or meta.get("source") or ""
+
+        cand = buckets.get(key)
+        if cand is None:
+            buckets[key] = {
+                "name": name,
+                "dept": dept,
+                "contacts": {
+                    "phones": sorted(set(contacts.get("phones", []))),
+                    "emails": sorted(set(contacts.get("emails", []))),
+                },
+                "docs": [doc],
+                "snippets": [s for s in snippets if s],
+                "score": score,
+                "source": source_val,
+            }
+            continue
+
+        # Merge with existing candidate
+        cand["name"] = cand["name"] or name
+        cand["dept"] = cand["dept"] or dept
+        cand["score"] = max(cand["score"], score)
+        cand["contacts"]["phones"] = sorted(set(cand["contacts"]["phones"] + contacts.get("phones", [])))
+        cand["contacts"]["emails"] = sorted(set(cand["contacts"]["emails"] + contacts.get("emails", [])))
+        cand["docs"].append(doc)
+        for snip in snippets:
+            if snip and snip not in cand["snippets"]:
+                cand["snippets"].append(snip)
+
+    candidates = list(buckets.values())
+    candidates.sort(key=lambda c: c.get("score", 0), reverse=True)
+    return candidates
+
+
 def _build_low_confidence_response(question: str, conf: float, lex_hits: list) -> Dict[str, Any]:
     """Creates a clarification response when confidence is insufficient."""
+    candidates = _people_candidates_from_hits(question, lex_hits)
+
+    if candidates:
+        if len(candidates) == 1:
+            cand = candidates[0]
+            answer_text = _format_direct(cand["name"], cand["dept"], cand["contacts"], cand["snippets"])
+            citations = _collect_citations_from_docs(cand["docs"])
+            return {
+                "answer": answer_text,
+                "citations": citations,
+                "context_found": True,
+                "confidence": conf,
+            }
+
+        lines = []
+        for idx, cand in enumerate(candidates[:3], start=1):
+            segments = []
+            if cand["name"]:
+                segments.append(cand["name"])
+            if cand["dept"]:
+                segments.append(cand["dept"])
+            phones = cand["contacts"].get("phones") or []
+            emails = cand["contacts"].get("emails") or []
+            if phones:
+                segments.append("📞 " + ", ".join(phones))
+            if emails:
+                segments.append("✉️ " + ", ".join(emails))
+            if not segments:
+                segments.append(cand["source"] or "sem detalhes")
+            lines.append(f"{idx}. {' — '.join(segments)}")
+
+        clarification = (
+            "Encontrei mais de uma pessoa compatível. Informe o departamento, curso ou nome completo, "
+            "ou escolha uma das opções:\n" + "\n".join(lines)
+        )
+        citations = _collect_citations_from_docs([doc for cand in candidates[:3] for doc in cand["docs"]])
+        return {
+            "answer": clarification,
+            "citations": citations,
+            "context_found": False,
+            "confidence": conf,
+            "needs_clarification": True,
+        }
+
     options = []
     for doc, _hits, _score in lex_hits[:3]:
         src = (getattr(doc, "metadata", {}) or {}).get("source") or ""
@@ -1213,6 +1369,7 @@ def answer_question(question: str, embeddings_model: HuggingFaceEmbeddings, vect
         all_docs: List[Document] = list(getattr(vectorstore.docstore, "_dict", {}).values())
     except Exception:
         all_docs = []
+    all_docs = normalize_documents(all_docs)
 
     # 2. Realizar busca lexical inicial
     lex_hits = _perform_lexical_search(q, all_docs)

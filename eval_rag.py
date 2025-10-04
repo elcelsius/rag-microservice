@@ -65,13 +65,53 @@ def recall_at_k(golds: List[str], preds_texts: List[str], k: int) -> float:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Avaliação do RAG Microservice")
-    parser.add_argument("dataset", nargs="?", help="Caminho do dataset (CSV ou JSONL).")
-    parser.add_argument("--agent-url", default=API_AGENT_DEFAULT, help="Endpoint do agente (default: %(default)s)")
-    parser.add_argument("--query-url", default=API_QUERY_DEFAULT, help="Endpoint legado /query (default: %(default)s)")
-    parser.add_argument("--compare", action="store_true", help="Compara agente e endpoint legado na mesma execução.")
-    parser.add_argument("--output-dir", default="reports", help="Diretório para salvar o relatório em JSON.")
-    parser.add_argument("--label", default="", help="Rótulo opcional para compor o nome do arquivo de saída.")
-    return parser.parse_args()
+    parser.add_argument(
+        "dataset",
+        nargs="?",
+        help="Caminho do dataset (CSV ou JSONL). Pode ser omitido se --dataset for usado.",
+    )
+    parser.add_argument(
+        "--dataset",
+        dest="dataset_flag",
+        help="Caminho do dataset (CSV ou JSONL).",
+    )
+    parser.add_argument(
+        "--agent-url",
+        "--agent-endpoint",
+        dest="agent_url",
+        default=API_AGENT_DEFAULT,
+        help="Endpoint do agente (default: %(default)s)",
+    )
+    parser.add_argument(
+        "--query-url",
+        "--legacy-endpoint",
+        dest="query_url",
+        default=API_QUERY_DEFAULT,
+        help="Endpoint legado /query (default: %(default)s)",
+    )
+    parser.add_argument(
+        "--compare",
+        action="store_true",
+        help="Compara agente e endpoint legado na mesma execução.",
+    )
+    parser.add_argument(
+        "--output-dir",
+        "--out",
+        dest="output_dir",
+        default="reports",
+        help="Diretório para salvar o relatório em JSON.",
+    )
+    parser.add_argument(
+        "--label",
+        default="",
+        help="Rótulo opcional para compor o nome do arquivo de saída.",
+    )
+    args = parser.parse_args()
+    if getattr(args, "dataset_flag", None):
+        args.dataset = args.dataset_flag
+    if hasattr(args, "dataset_flag"):
+        delattr(args, "dataset_flag")
+    return args
 
 
 def resolve_dataset_path(arg_path: str | None) -> Path:
@@ -202,19 +242,24 @@ async def evaluate_endpoint(dataset_records: List[Dict[str, Any]], url: str, lab
         from ragas.metrics import faithfulness, answer_relevancy  # type: ignore
         from langchain_google_genai import ChatGoogleGenerativeAI  # type: ignore
 
-        ragas_llm = ChatGoogleGenerativeAI(model=EVAL_LLM_MODEL, temperature=0.0)
-        generation_metrics = [faithfulness, answer_relevancy]
-        ragas_result = await evaluate(
-            dataset=results_dataset,
-            metrics=generation_metrics,
-            llm=ragas_llm,
-            raise_exceptions=False,
-        )
-        ragas_scores = ragas_result.scores.to_dict()
-        avg_generation_metrics = {
-            key: round(sum(values) / len(values), 4) if values else 0.0
-            for key, values in ragas_scores.items()
-        }
+        google_api_key = os.getenv("GOOGLE_API_KEY")
+        if not google_api_key:
+            ragas_available = False
+            print("WARN: GOOGLE_API_KEY não configurado. Pulando métricas de geração (RAGAs).")
+        else:
+            ragas_llm = ChatGoogleGenerativeAI(model=EVAL_LLM_MODEL, temperature=0.0)
+            generation_metrics = [faithfulness, answer_relevancy]
+            ragas_result = await evaluate(
+                dataset=results_dataset,
+                metrics=generation_metrics,
+                llm=ragas_llm,
+                raise_exceptions=False,
+            )
+            ragas_scores = ragas_result.scores.to_dict()
+            avg_generation_metrics = {
+                key: round(sum(values) / len(values), 4) if values else 0.0
+                for key, values in ragas_scores.items()
+            }
     except ImportError:
         ragas_available = False
         print("WARN: Biblioteca ragas ou dependencias nao instaladas. Pulando metricas de geracao.")

@@ -1,0 +1,57 @@
+name: RAG (Deepseek R1 7B) — reasoning experimental
+version: 1.0.0
+schema: v1
+models:
+  - name: deepseek-r1-7b
+    provider: ollama
+    model: deepseek-r1:7b
+    roles: [chat, edit, apply]
+  - name: autocomplete-helper
+    provider: ollama
+    model: llama3:8b-instruct-q4_K_M
+    roles: [autocomplete]
+    autocompleteOptions:
+      debounceDelay: 200
+      maxPromptTokens: 1024
+      onlyMyCode: true
+context:
+  - provider: file
+  - provider: code
+  - provider: diff
+  - provider: terminal
+rules:
+  - Nunca execute comandos destrutivos (rm -rf, git reset --hard, drop database) sem explicar o plano e pedir confirmação explícita.
+  - Sempre mostre o DIFF antes de aplicar edições de arquivo.
+  - Não exponha segredos (.env, chaves). Respeite o .gitignore.
+  - Use type hints, docstrings Google-style e mantenha funções curtas.
+  - Ao alterar retrieval/reranker/prompt, rode `eval_rag.py` (subset) e reporte métricas (faithfulness/answer_relevancy, recall/mrr/ndcg).
+  - Após alterar API/CLI, atualize o README com exemplos executáveis.
+prompts:
+  - name: Refactor módulo (seguro)
+    description: Refatorar mantendo comportamento e testes verdes
+    prompt: |
+      Melhore clareza e testabilidade; adicione type hints e docstrings. Mantenha API pública estável. Mostre DIFF e como testar (pytest + curl).
+  - name: Escrever testes Pytest
+    description: Criar testes para o arquivo atual
+    prompt: |
+      Cubra casos felizes, erros esperados e bordas; use fixtures/mocks quando fizer sentido. Forneça comandos `pytest`.
+  - name: Avaliar com RAGAs (subset)
+    description: Rodar eval_rag.py e interpretar métricas
+    prompt: |
+      Verifique deps e GOOGLE_API_KEY; rode avaliação (subset) e explique recall/mrr/ndcg e faithfulness/answer_relevancy. Sugira ajustes.
+  - name: Implementar cache Redis
+    description: Adicionar cache de respostas + métricas
+    prompt: |
+      Adicione Redis no compose, REDIS_URL/TTL no .env. Implemente cache no answer_question e no agente, métricas hits/misses em /metrics, invalidação pós-ETL.
+  - name: Agente — auto_refine
+    description: Nó de reescrita quando confiança baixa
+    prompt: |
+      Crie nó auto_refine (1–2 rewrites) antes de pedir_info. Logue nós/tempo/rewrites e limite iterações.
+  - name: Executar ETL
+    description: Reconstruir índice FAISS
+    prompt: |
+      Execute scripts/etl_build_index.py (ou ai_etl no compose), valide FAISS e faça smoke em /query.
+  - name: Debug de latência
+    description: Investigar latência alta
+    prompt: |
+      Meça tempos por etapa (lexical, vetorial, reranker, LLM), confira TOP_K/CANDIDATES e device, avalie cache e gargalos I/O.

@@ -5,6 +5,7 @@
 # Geralmente não versionamos os dados, apenas o código que os processa.
 /data/
 
+
 # Pasta do Vector Store (são arquivos gerados e grandes)
 /vector_store/
 
@@ -21,8 +22,16 @@ Thumbs.db
 # Dependências do Docker (se aplicável, para o futuro)
 vendor/
 node_modules/
+
+# Pasta de relatórios de teste
 reports/
 
 # Arquivos e pastas das IDEs
 .venv
 .idea
+
+# OpenHands local
+.env.oh
+
+# Continu local
+# .continue/
