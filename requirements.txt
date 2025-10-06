@@ -1,81 +1,48 @@
-﻿# --- Framework Web ---
-# Usado para criar a API que expÃƒÂµe o modelo de RAG.
+# --- Framework Web ---
 flask==3.0.3
-flask-cors==4.0.1 # Habilita o Cross-Origin Resource Sharing (CORS) para a API Flask.
+flask-cors==4.0.1
 
-# --- ConfiguraÃƒÂ§ÃƒÂ£o e UtilitÃƒÂ¡rios ---
-# Carrega variÃƒÂ¡veis de ambiente de um arquivo .env para configuraÃƒÂ§ÃƒÂ£o.
+# --- Configuração e Utilitários ---
 python-dotenv==1.0.1
-# SerializaÃƒÂ§ÃƒÂ£o/desserializaÃƒÂ§ÃƒÂ£o de objetos JSON, otimizado para performance.
 orjson==3.11.3
-# Cliente HTTP para fazer requisiÃƒÂ§ÃƒÂµes, por exemplo, para APIs externas.
 requests==2.32.5
-# Biblioteca para retentativas automÃƒÂ¡ticas de operaÃƒÂ§ÃƒÂµes que podem falhar.
 tenacity==8.5.0
-# ORM para interagir com o banco de dados (PostgreSQL).
 SQLAlchemy==2.0.43
-# Cliente/servidor HTTP assÃƒÂ­ncrono.
 aiohttp==3.12.15
-# Ajuda a converter objetos Python (dataclasses) para JSON e vice-versa.
 dataclasses-json==0.6.7
-# Biblioteca para parsing de arquivos YAML (usado para configs, etc.).
 PyYAML==6.0.2
 
 # --- Cache ---
-# Cliente Python para o banco de dados em memÃƒÂ³ria Redis.
 redis==5.0.7
 
-# --- Ecossistema LangChain ---
-# Componentes da comunidade LangChain para integraÃƒÂ§ÃƒÂµes diversas.
-langchain-community==0.2.10
-# O nÃƒÂºcleo do LangChain, com as abstraÃƒÂ§ÃƒÂµes principais (LLMs, Chains, etc.).
-langchain-core==0.2.43
-# IntegraÃƒÂ§ÃƒÂ£o do LangChain com modelos do HuggingFace (novo pacote 0.2+).
-langchain-huggingface==0.0.3
-# Algoritmos para dividir textos longos em pedaÃƒÂ§os menores (chunks).
-langchain-text-splitters==0.2.4
-# IntegraÃƒÂ§ÃƒÂ£o do LangChain com modelos do Google Gemini.
-langchain-google-genai==1.0.7
-langgraph==0.0.63
+# --- Ecossistema LangChain (versões liberadas para resolver conflitos) ---
+langchain-community
+langchain-core
+langchain-huggingface
+langchain-text-splitters
+langchain-google-genai
+langgraph
 
 # --- Modelos de Embeddings (Hugging Face) ---
-# Framework para trabalhar com modelos de embeddings e transformers.
-sentence-transformers>=2.6.0,<2.7
-# Hub para baixar modelos e datasets do Hugging Face.
-huggingface-hub==0.24.6
-# Biblioteca principal do Hugging Face para modelos de NLP.
+sentence-transformers
+huggingface-hub
 transformers==4.48.3
-# SentencePiece compatÃƒÂ­vel com os modelos multilÃƒÂ­ngues utilizados.
 sentencepiece==0.2.0
 
-# --- Vector Store e AnÃƒÂ¡lise de Similaridade ---
-# Biblioteca para busca de similaridade eficiente em vetores.
-# A versÃƒÂ£o especÃƒÂ­fica (CPU/GPU) ÃƒÂ© definida nos arquivos requirements-cpu/gpu.txt.
-#faiss-cpu==1.7.4
-# Biblioteca para cÃƒÂ¡lculo rÃƒÂ¡pido de similaridade entre strings.
+# --- Vector Store e Análise de Similaridade ---
+# faiss-* e torch são instalados via requirements-cpu/gpu.txt ou Dockerfile
 rapidfuzz==3.9.7
-# Biblioteca fundamental para computaÃƒÂ§ÃƒÂ£o numÃƒÂ©rica em Python.
 numpy==1.26.4
-# O PyTorch ÃƒÂ© uma dependÃƒÂªncia do sentence-transformers.
-# A versÃƒÂ£o especÃƒÂ­fica (CPU/GPU) ÃƒÂ© definida nos arquivos a seguir.
-#torch==2.8.0
 
 # --- Processamento de Documentos ---
-# Para extrair texto de arquivos PDF.
 pypdf==4.2.0
-# Para extrair texto de arquivos DOCX (Microsoft Word).
 python-docx==1.1.2
-# Natural Language Toolkit, usado para processamento de texto como tokenizaÃƒÂ§ÃƒÂ£o.
 nltk==3.9.1
 
 # --- LLM (Google Gemini) ---
-# SDK oficial do Google para interagir com a API do Gemini.
-google-generativeai>=0.7.2,<0.8
-# UtilitÃƒÂ¡rio para rearranjo de tensores (usado por alguns modelos HF).
+google-generativeai
 einops>=0.7
 
-# --- AvaliaÃƒÂ§ÃƒÂ£o de RAG ---
-# Framework para avaliaÃƒÂ§ÃƒÂ£o de pipelines de RAG.
-ragas==0.1.9
-# Patch para permitir que asyncio rode dentro de ambiente sÃƒÂ­ncrono.
+# --- Avaliação de RAG ---
+ragas
 nest-asyncio==1.6.0

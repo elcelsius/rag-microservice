@@ -14,9 +14,9 @@ PROMPTS_DIR = os.getenv("PROMPTS_DIR", "/app/prompts")
 
 # Configurações para o Google Gemini (prioritário).
 # GOOGLE_API_KEY: Chave da API do Google, pode ser definida como GOOGLE_API_KEY ou GEMINI_API_KEY.
-# GOOGLE_MODEL: Nome do modelo Gemini a ser usado, pode ser GOOGLE_MODEL ou GEMINI_MODEL, com fallback para "gemini-2.5-flash-lite".
+# GOOGLE_MODEL: Nome do modelo Gemini a ser usado, pode ser GOOGLE_MODEL ou GEMINI_MODEL, com fallback para "gemini-flash-latest".
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
-GOOGLE_MODEL   = os.getenv("GOOGLE_MODEL") or os.getenv("GEMINI_MODEL") or "gemini-2.5-flash-lite"
+GOOGLE_MODEL   = os.getenv("GOOGLE_MODEL") or os.getenv("GEMINI_MODEL") or "gemini-flash-latest"
 
 # Configurações para OpenAI (opcional, para uso futuro ou como fallback).
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
@@ -42,7 +42,7 @@ def load_prompt(filename: str) -> str:
         return ""
 
 def _lazy_client():
-    """Inicializa o cliente LLM (Google ou OpenAI) apenas uma vez, priorizando o Google.
+    """Inicializa o cliente LLM (Google ou OpenAI) apenas uma vez, priorizando o Google. 
     
     Returns:
         Tuple[Optional[str], Any]: Uma tupla contendo o nome do provedor ("google" ou "openai") e o objeto cliente, ou (None, None) se nenhum for configurado.
@@ -79,7 +79,7 @@ def _lazy_client():
     return _provider, _client
 
 def _extract_text_from_google_response(resp) -> str:
-    """Extrai texto de uma resposta do modelo Google Gemini, compatível com diferentes versões do SDK.
+    """Extrai texto de uma resposta do modelo Google Gemini, compatível com diferentes versões do SDK. 
     
     Args:
         resp: O objeto de resposta retornado pelo modelo Gemini.
@@ -111,7 +111,7 @@ def _extract_text_from_google_response(resp) -> str:
     return ""
 
 def _try_build_google_model(genai, system_prompt: str, generation_config: dict):
-    """Tenta construir um modelo Google GenerativeModel usando diferentes assinaturas do SDK.
+    """Tenta construir um modelo Google GenerativeModel usando diferentes assinaturas do SDK. 
     
     Args:
         genai: O módulo `google.generativeai`.
@@ -146,7 +146,7 @@ def _try_build_google_model(genai, system_prompt: str, generation_config: dict):
         return None
 
 def _call_google(system_prompt: str, user_prompt: str, expect_json: bool, max_tokens: int) -> Tuple[str, Optional[dict]]:
-    """Realiza uma chamada ao modelo Google Gemini.
+    """Realiza uma chamada ao modelo Google Gemini. 
     
     Args:
         system_prompt (str): O prompt do sistema.
@@ -198,7 +198,7 @@ def _call_google(system_prompt: str, user_prompt: str, expect_json: bool, max_to
     return text, None
 
 def _call_openai(system_prompt: str, user_prompt: str, expect_json: bool, max_tokens: int) -> Tuple[str, Optional[dict]]:
-    """Realiza uma chamada ao modelo OpenAI.
+    """Realiza uma chamada ao modelo OpenAI. 
     
     Args:
         system_prompt (str): O prompt do sistema.
@@ -260,5 +260,3 @@ def call_llm(system_prompt: str, user_prompt: str, *, expect_json: bool = False,
     if provider == "openai":
         return _call_openai(system_prompt, user_prompt, expect_json, max_tokens)
     return "", None
-
-

@@ -32,9 +32,16 @@ run() {
 }
 
 if $WITH_ETL; then
-  step "1/7 Build containers (API+Web +ETL)"
+  step "1/8 Derrubando containers existentes..."
 else
-  step "1/7 Build containers (API+Web)"
+  step "1/8 Derrubando containers existentes..."
+fi
+run docker-compose -f docker-compose.cpu.yml down --remove-orphans
+
+if $WITH_ETL; then
+  step "2/8 Build containers (API+Web +ETL)"
+else
+  step "2/8 Build containers (API+Web)"
 fi
 build_targets=(ai_projeto_api ai_web_ui)
 if $WITH_ETL; then
@@ -43,7 +50,7 @@ fi
 run docker-compose -f docker-compose.cpu.yml build "${build_targets[@]}"
 
 if $WITH_ETL; then
-  step "2/7 (opcional) Rodando ETL — exts=${EXTS}, loaders=${LOADERS}"
+  step "3/8 (opcional) Rodando ETL — exts=${EXTS}, loaders=${LOADERS}"
   run docker-compose -f docker-compose.cpu.yml run --rm ai_etl \
     python scripts/etl_build_index.py \
       --data ./data \
@@ -53,26 +60,54 @@ if $WITH_ETL; then
   ok "ETL finalizado"
 fi
 
-step "3/7 Subindo API+Web (CPU)"
+step "4/8 Subindo API+Web (CPU)"
 run docker-compose -f docker-compose.cpu.yml up -d ai_projeto_api ai_web_ui
 
-step "4/7 Healthz (8080)"
-HZ=$(curl -fsS http://localhost:8080/api/healthz)
-echo "$HZ" | jq . >/dev/null || { err "healthz não é JSON"; echo "$HZ"; exit 1; }
-READY=$(echo "$HZ" | jq -r '.ready')
-FAISS=$(echo "$HZ" | jq -r '.faiss')
-[[ "$READY" == "true" && "$FAISS" == "true" ]] || { err "healthz não ready/faiss"; echo "$HZ"; exit 1; }
-ok "ready:true faiss:true"
+step "NOVO: Aguardando container 'ai_projeto_api' ficar saudável"
+for i in {1..300}; do # Timeout de 5 minutos (150 * 2s)
+  STATUS=$(docker-compose -f docker-compose.cpu.yml ps ai_projeto_api | grep 'healthy' || true)
+  if [[ -n "$STATUS" ]]; then
+    ok "Container 'ai_projeto_api' está saudável!"
+    break
+  fi
+  echo -n "."
+  sleep 2
+done
+if [[ -z "$STATUS" ]]; then
+  err "Container 'ai_projeto_api' não ficou saudável a tempo."
+  docker-compose -f docker-compose.cpu.yml logs ai_projeto_api
+  exit 1
+fi
+
+step "5/8 Aguardando Healthz (8080)"
+for i in {1..30}; do
+  HZ=$(curl -fsS http://localhost:8080/api/healthz || true)
+  echo -e "\n   Tentativa $i/30: Verificando healthz... Resposta: ${HZ:-'(vazio)'}"
+  READY=$(jq -r '.ready' <<< "$HZ" 2>/dev/null)
+  FAISS=$(jq -r '.faiss' <<< "$HZ" 2>/dev/null)
+  echo "   => ready='${READY}', faiss='${FAISS}'"
+  if [[ "$READY" == "true" && "$FAISS" == "true" ]]; then
+    ok "API pronta! ready:true faiss:true"
+    break
+  fi
+  sleep 2
+done
+
+if [[ "$READY" != "true" || "$FAISS" != "true" ]]; then
+  err "API não ficou pronta a tempo. Healthz: $HZ"
+  docker-compose -f docker-compose.cpu.yml logs ai_projeto_api
+  exit 1
+fi
 
 PAYLOAD_DEBUG=$(jq -n --arg question "$Q" '{question:$question, debug:true}')
 PAYLOAD_NODEBUG=$(jq -n --arg question "$Q" '{question:$question, debug:false}')
 
-step "5/7 Consulta via 5000 (debug=true)"
-printf '\033[0;36m   comando:\033[0m curl POST /query (5000)\n'
-R5000=$(curl -fsS -H "Content-Type: application/json" -d "$PAYLOAD_DEBUG" http://localhost:5000/query)
+step "6/8 Consulta via 5000 (debug=true)"
+printf '\033[0;36m   comando:\033[0m curl POST /api/query (8080)\n'
+R5000=$(curl -fsS -H "Content-Type: application/json" -d "$PAYLOAD_DEBUG" http://localhost:8080/api/query)
 echo "$R5000" | jq '.context_found, .debug.route, .debug.timing_ms' || true
 
-step "6/7 Consulta via 8080 (debug=false)"
+step "7/8 Consulta via 8080 (debug=false)"
 printf '\033[0;36m   comando:\033[0m curl POST /api/query (8080)\n'
 R8080=$(curl -fsS -H "Content-Type: application/json" -d "$PAYLOAD_NODEBUG" http://localhost:8080/api/query)
 echo "$R8080" | jq '.answer, .citations' >/dev/null || { err "resposta inválida"; echo "$R8080"; exit 1; }
@@ -80,7 +115,7 @@ LEN=$(echo "$R8080" | jq -r '.answer | length')
 [[ "${LEN:-0}" -gt 0 ]] || { err "answer vazio"; echo "$R8080"; exit 1; }
 ok "answer ok (${LEN} chars)"
 
-step "7/7 Verificações extra (reranker opcional)"
+step "8/8 Verificações extra (reranker opcional)"
 # Se debug.rerank existir, garantir que score é sempre float (não null)
 if echo "$R5000" | jq '.debug.rerank' >/dev/null 2>&1; then
   BAD=$(echo "$R5000" | jq '[.debug.rerank.scored[]?.score] | map(type) | any(. != "number")')

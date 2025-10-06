@@ -261,8 +261,8 @@ def query():
     return jsonify(res)
 
 
-@app.post("/api/ask")
-def api_ask():
+@app.post("/ask")
+def ask():
     return query()
 
 

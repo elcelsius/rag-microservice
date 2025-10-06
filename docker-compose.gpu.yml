@@ -79,7 +79,7 @@ services:
       FAISS_STORE_DIR: "/app/vector_store/faiss_index"
       EMBEDDINGS_MODEL: "${EMBEDDINGS_MODEL:-intfloat/multilingual-e5-large}"
       GOOGLE_API_KEY: "${GOOGLE_API_KEY:-}"
-      GOOGLE_MODEL:   "${GOOGLE_MODEL:-gemini-2.5-flash-lite}"
+      GOOGLE_MODEL:   "${GOOGLE_MODEL:-gemini-flash-latest}"
       REQUIRE_LLM_READY: "${REQUIRE_LLM_READY:-false}"
       RERANKER_ENABLED: "${RERANKER_ENABLED:-true}"
       RERANKER_NAME: "${RERANKER_NAME:-jinaai/jina-reranker-v2-base-multilingual}"
@@ -99,6 +99,7 @@ services:
       - ./prompts:/app/prompts:ro
       - ./data:/app/data:ro
       - ./config:/app/config:ro
+      - ./tools:/app/tools:ro
     ports:
       - "5000:5000"
     healthcheck:
@@ -118,6 +119,7 @@ services:
   ai_web_ui:
     image: nginx:1.27-alpine
     container_name: ai_web_ui
+    # Garante que o Nginx só suba após a API estar saudável.
     depends_on:
       ai_projeto_api:
         condition: service_healthy

@@ -1,256 +1,77 @@
-/* web_ui/style.css (Versão Híbrida: Cabeçalho Moderno + Chat Clássico) */
-
-/* Define variáveis de cor para fácil customização */
-:root {
-    --primary-color: #007bff;
-    --secondary-color: #0056b3;
-    --bg-light: #f4f7f9;
-    --text-dark: #333;
-    --text-light: #fff;
-    --user-bubble-color: #007bff; /* Azul para o usuário */
-    --ai-bubble-color: #fff;      /* Branco para a IA */
-}
-
-/* Estilo base do corpo da página (Mantido) */
 body {
-    background-color: var(--bg-light);
-    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    background-color: #f4f7f9;
+    color: #333;
+    margin: 0;
+    padding: 20px;
     display: flex;
     justify-content: center;
-    align-items: center;
-    height: 100vh;
-    margin: 0;
-    padding: 20px;
-}
-
-/* O container principal do chat (Mantido) */
-.chat-widget {
-    width: 100%;
-    max-width: 420px;
-    height: 90vh;
-    max-height: 700px;
-    background-color: var(--text-light);
-    border-radius: 20px;
-    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.1);
-    display: flex;
-    flex-direction: column;
-    overflow: hidden;
-}
-
-/* Cabeçalho com gradiente azul (Mantido) */
-.chat-header {
-    background: linear-gradient(135deg, var(--primary-color), var(--secondary-color));
-    color: var(--text-light);
-    padding: 15px 20px;
-    border-top-left-radius: 20px;
-    border-top-right-radius: 20px;
-    display: flex;
-    align-items: center;
-    position: relative;
-    z-index: 1;
-}
-
-.chat-header .header-content {
-    display: flex;
-    align-items: center;
-    justify-content: flex-start;
-    width: 100%;
-}
-
-/* Estilo para o logo no cabeçalho (Mantido) */
-.chat-logo-header {
-    height: 60px;
-    width: auto;
-    margin-right: 15px;
-    border-radius: 8px;
-    box-shadow: 0 2px 8px rgba(0,0,0,0.15);
-    object-fit: contain;
-}
-
-.header-text-container h2 {
-    margin: 0;
-    font-size: 1.3rem;
-    font-weight: 600;
-}
-
-.header-text-container p {
-    margin: 0;
-    font-size: 0.85rem;
-    color: #92e06a; /* Verde que você gostou */
-    opacity: 0.9;
-}
-
-
-/* --- SEÇÃO MODIFICADA: Estilo da Área de Conversa --- */
-
-/* Área principal das mensagens com fundo cinza claro */
-.chat-box {
-    flex-grow: 1;
-    padding: 20px;
-    overflow-y: auto;
-    display: flex;
-    flex-direction: column;
-    gap: 15px;
-    background-color: var(--bg-light); /* Fundo cinza claro como na primeira versão */
-    position: relative;
-}
-
-/* Efeito de onda (Mantido) */
-.chat-box::before {
-    content: '';
-    position: absolute;
-    top: 0;
-    left: 0;
-    width: 100%;
-    height: 30px;
-    background: linear-gradient(135deg, var(--primary-color), var(--secondary-color));
-    transform: translateY(-100%);
-    clip-path: ellipse(100% 60% at 50% 100%);
-    z-index: 0;
-}
-
-
-/* Estilo geral das mensagens, restaurando o avatar */
-.message {
-    display: flex;
     align-items: flex-start;
-    max-width: 85%;
+    min-height: 100vh;
 }
 
-.avatar { /* Estilo do avatar da primeira versão */
-    width: 40px;
-    height: 40px;
-    border-radius: 50%;
-    color: white;
+.container {
+    width: 100%;
+    max-width: 800px;
+    background-color: #fff;
+    padding: 30px;
+    border-radius: 8px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+}
+
+h1 {
+    color: #1a2b4d;
+    margin-top: 0;
+}
+
+.input-container {
     display: flex;
-    align-items: center;
-    justify-content: center;
-    font-weight: bold;
-    flex-shrink: 0;
-}
-
-.message .text { /* Estilo do balão da primeira versão */
-    padding: 12px 16px;
-    border-radius: 12px;
-    line-height: 1.5;
-    font-size: 0.95rem;
-    box-shadow: 0 1px 3px rgba(0,0,0,0.05); /* Sombra sutil */
-}
-
-/* Mensagens da IA (Esquerda) */
-.ai-message {
-    align-self: flex-start;
-}
-.ai-message .avatar {
-    background-color: var(--primary-color);
-    margin-right: 12px;
-}
-.ai-message .text {
-    background-color: var(--ai-bubble-color); /* Branco */
-    color: var(--text-dark);
-}
-
-/* Mensagens do Usuário (Direita) */
-.user-message {
-    align-self: flex-end;
-    flex-direction: row-reverse; /* Inverte a ordem: texto, depois avatar */
-}
-.user-message .avatar {
-    background-color: #6c757d; /* Cinza escuro */
-    margin-left: 12px;
-}
-.user-message .text {
-    background-color: var(--user-bubble-color); /* Azul */
-    color: var(--text-light);
-}
-
-/* Indicador de "Pensando..." */
-.typing-indicator .text {
-    font-style: italic;
-    background-color: transparent !important;
-    box-shadow: none;
-}
-.typing-indicator .avatar {
-    background-color: var(--primary-color);
-    margin-right: 12px;
-}
-
-
-/* --- FIM DA SEÇÃO MODIFICADA --- */
-
-/* Área de input de texto (Mantida) */
-.chat-input-area {
-    padding: 15px 20px;
-    background-color: var(--text-light);
-    border-top: 1px solid #eee;
-}
-
-#chat-form {
-    display: flex;
-    align-items: center;
     gap: 10px;
+    margin-bottom: 20px;
 }
 
-#user-input {
+textarea {
     flex-grow: 1;
-    border: none;
-    padding: 10px;
-    font-size: 1rem;
-    background-color: transparent;
+    padding: 12px;
+    border: 1px solid #ccc;
+    border-radius: 6px;
+    font-size: 16px;
+    resize: vertical;
+    min-height: 50px;
 }
 
-#user-input:focus {
-    outline: none;
-}
-
-/* Botão de envio circular (Mantido) */
-#send-btn {
-    background-color: var(--primary-color);
+button {
+    padding: 12px 20px;
+    background-color: #007bff;
+    color: white;
     border: none;
-    border-radius: 50%;
-    width: 50px;
-    height: 50px;
-    display: flex;
-    justify-content: center;
-    align-items: center;
+    border-radius: 6px;
     cursor: pointer;
+    font-size: 16px;
     transition: background-color 0.2s;
 }
 
-#send-btn:hover {
-    background-color: var(--secondary-color);
+button:hover {
+    background-color: #0056b3;
 }
 
-/* --- ESTILOS PARA CITAÇÕES --- */
-.citations {
-    margin-top: 15px;
-    padding-top: 10px;
-    border-top: 1px solid #e0e0e0;
+.response-container {
+    background-color: #e9ecef;
+    border: 1px solid #ced4da;
+    border-radius: 6px;
+    padding: 20px;
+    min-height: 100px;
+    white-space: pre-wrap;
+    word-wrap: break-word;
+    font-family: "Courier New", Courier, monospace;
+    font-size: 14px;
 }
 
-.citations h4 {
-    margin: 0 0 8px 0;
-    font-size: 0.8rem;
-    color: #555;
-    font-weight: 600;
+.placeholder {
+    color: #6c757d;
 }
 
-.citation {
-    margin-bottom: 8px;
-}
-
-.citation-source {
-    font-size: 0.75rem;
+.error {
+    color: #d9534f;
     font-weight: bold;
-    color: var(--primary-color);
-    margin: 0;
-}
-
-.citation-snippet {
-    font-size: 0.75rem;
-    color: #666;
-    margin: 2px 0 0 0;
-    font-style: italic;
-    white-space: pre-wrap; /* Mantém a formatação do texto do trecho */
-    word-break: break-word;
 }

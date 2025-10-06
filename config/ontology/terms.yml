@@ -2,75 +2,160 @@
 # Arquivo de configuração centralizado para termos, siglas e entidades
 # do sistema RAG, compilado a partir da análise de 32 documentos.
 
-# Rótulos dos principais departamentos e diretorias (slug -> nome canônico)
+# Rótulos dos principais departamentos, diretorias e laboratórios (slug -> nome canônico)
 departments:
+  # Órgãos Superiores
+  diretoria: "Diretoria"
+  vice_diretoria: "Vice-Diretoria"
+  congregacao: "Congregação"
+
+  # Administração Geral
   administracao: "Administração"
+
+  # Departamentos Acadêmicos
   biologia: "Departamento de Ciências Biológicas"
   computacao: "Departamento de Computação"
-  congregacao: "Congregação"
-  diretoria_academica: "Diretoria Técnica Acadêmica"
-  diretoria_administrativa: "Diretoria Técnica Administrativa"
-  dti: "Diretoria Técnica de Informática"
   educacao: "Departamento de Educação"
   educacaofisica: "Departamento de Educação Física"
   fisica: "Departamento de Física e Meteorologia"
   matematica: "Departamento de Matemática"
   psicologia: "Departamento de Psicologia"
   quimica: "Departamento de Química"
-  staepe: "Seção Técnica de Apoio ao Ensino, Pesquisa e Extensão"
-  stgp: "Seção Técnica de Gestão de Pessoas"
-  stpg: "Seção Técnica de Pós-Graduação"
 
-# Aliases para nomes comuns, usados para normalização e busca flexível.
-aliases:
-  andreia: ["andrea", "andria", "andréia", "andréa", "andreá"]
-  andréa: ["andreia", "andrea", "andréia"]
-
-# Siglas, abreviações e termos equivalentes. Essencial para o RAG.
-synonyms:
-  # Cursos
-  bcc: "Bacharelado em Ciência da Computação"
-  bsi: "Bacharelado em Sistemas de Informação"
-
-  # Departamentos e Seções (Siglas)
-  dco: "Departamento de Computação"
+  # Diretorias Técnicas
   dta: "Diretoria Técnica Acadêmica"
   dtad: "Diretoria Técnica Administrativa"
-  dpsi: "Departamento de Psicologia"
-  def: "Departamento de Educação Física"
+  dti: "Diretoria Técnica de Informática"
 
-  # Seções da Diretoria Técnica Acadêmica (DTA)
+  # Seções da DTA (Diretoria Técnica Acadêmica)
+  staepe: "Seção Técnica de Apoio ao Ensino, Pesquisa e Extensão"
   stg: "Seção Técnica de Graduação"
   stpg: "Seção Técnica de Pós-Graduação"
   sta: "Seção Técnica Acadêmica"
 
-  # Seções da Diretoria Técnica Administrativa (DTAd)
+  # Seções da DTAd (Diretoria Técnica Administrativa)
+  stgp: "Seção Técnica de Gestão de Pessoas"
+  stf: "Seção Técnica de Finanças"
+  stm: "Seção Técnica de Materiais"
+  saad: "Seção de Apoio Administrativo"
+
+  # Laboratórios e Outras Unidades
+  ldc: "Laboratório Didático Computacional"
+  lepec: "Laboratório de Ensino, Pesquisa e Extensão em Computação"
+  ipmet: "Instituto de Pesquisas Meteorológicas"
+
+# Aliases para nomes comuns, usados para normalização e busca flexível.
+aliases:
+  adriana: ["adrianna", "adryana"]
+  alessandra: ["alessandara"]
+  aloísio: ["aloisio", "aluisio"]
+  anderson: ["andersom", "andresson"]
+  andré: ["andre", "amdre"]
+  andreia: ["andrea", "andria", "andréia", "andréa", "andreá"]
+  andréa: ["andreia", "andrea", "andréia"]
+  antônio: ["antonio", "antoneo"]
+  carlos: ["karlos"]
+  célia: ["celia"]
+  christiane: ["cristiane"]
+  cristiane: ["christiane", "cristhiane"]
+  dagmar: ["dagma"]
+  édison: ["edison", "edson"]
+  emília: ["emilia"]
+  érico: ["erico"]
+  fábio: ["fabio", "fabiu"]
+  flávia: ["flavia"]
+  isabelle: ["isabele"]
+  joão: ["joao", "jão"]
+  josé: ["jose", "ze", "josa"]
+  júlio: ["julio"]
+  larissa: ["larisa", "lariça"]
+  lídia: ["lidia"]
+  lílian: ["lilian"]
+  luciene: ["lusiane"]
+  luís: ["luis", "luiz", "luíz"]
+  lúcia: ["lucia", "lussia"]
+  márcia: ["marcia"]
+  márcio: ["marcio"]
+  mário: ["mariu", "mario"]
+  natália: ["natalia"]
+  neusa: ["neuza"]
+  osvaldo: ["osvalldo", "oswaldo"]
+  patrícia: ["patricia"]
+  prescila: ["priscila"]
+  priscilia: ["priscillia"]
+  rodolfo: ["hodolfo"]
+  rogério: ["rogerio"]
+  rubens: ["rúbens"]
+  sandra: ["sandhra"]
+  sérgio: ["sergio"]
+  silvana: ["silvanna"]
+  silvia: ["síllvia", "sylvia"]
+  simone: ["simoni"]
+  sônia: ["sonia", "sónia"]
+  taís: ["tais", "thais", "thaís"]
+  thaís: ["tais", "taís", "thais"]
+  valquíria: ["valquiria", "valkiria"]
+  vinícius: ["vinicius"]
+
+# Siglas, abreviações e termos equivalentes. Essencial para o RAG.
+synonyms:
+  # Cursos de Graduação e Pós-Graduação
+  bcc: "Bacharelado em Ciência da Computação"
+  bsi: "Bacharelado em Sistemas de Informação"
+  comp: "Computação"
+  psico_curso: "Psicologia"
+  pedagogia: "Licenciatura em Pedagogia"
+  mat: "Matemática"
+  meteorologia: "Bacharelado em Meteorologia"
+  fisica_materiais: "Bacharelado em Física dos Materiais"
+  fis: "Física"
+  pos_graduacao: "Pós-Graduação"
+  lic_psicologia: "Licenciatura em Psicologia e Formação de Psicólogos"
+  lic_fisica: "Licenciatura em Física"
+
+  # Departamentos e Diretorias (Siglas)
+  dco: "Departamento de Computação"
+  dta: "Diretoria Técnica Acadêmica"
+  dtad: "Diretoria Técnica Administrativa"
+  dti: "Diretoria Técnica de Informática"
+  dpsi: "Departamento de Psicologia"
+  def: "Departamento de Educação Física"
+  dfm: "Departamento de Física e Meteorologia"
+  psico: "Departamento de Psicologia"
+
+  # Seções (Siglas)
+  staepe: "Seção Técnica de Apoio ao Ensino, Pesquisa e Extensão"
+  stg: "Seção Técnica de Graduação"
+  stpg: "Seção Técnica de Pós-Graduação"
+  sta: "Seção Técnica Acadêmica"
   saad: "Seção de Apoio Administrativo"
   stf: "Seção Técnica de Finanças"
   stm: "Seção Técnica de Materiais"
+  stgp: "Seção Técnica de Gestão de Pessoas"
 
   # Laboratórios e Locais
   ldc: "Laboratório Didático Computacional"
   lepec: "Laboratório de Ensino, Pesquisa e Extensão em Computação"
+  labsicc: "Laboratório Didático dos Cursos de Bacharelado em Sistemas de Informação e Bacharelado em Ciência da Computação"
 
   # Pró-Reitorias e Coordenadorias
-  cope: "Coordenadoria de Permanência Estudantil"
-  proex: "Pró-Reitoria de Extensão Universitária"
-  prograd: "Pró-reitoria de Graduação"
-  prope: "Pró-reitoria de Pesquisa"
+  cope: "Coordenadoria de Permanência Estudantil (COPE)"
+  proex: "Pró-Reitoria de Extensão Universitária (PROEX)"
+  prograd: "Pró-Reitoria de Graduação (PROGRAD)"
+  prope: "Pró-Reitoria de Pesquisa (PROPE)"
 
   # Outras Unidades
-  faac: "Faculdade de Arquitetura, Artes e Comunicação"
-  feb: "Faculdade de Engenharia de Bauru"
+  faac: "Faculdade de Arquitetura, Artes e Comunicação (FAAC)"
+  feb: "Faculdade de Engenharia de Bauru (FEB)"
   fundeb: "FUNDEB"
   ipmet: "IPMET"
 
   # Serviços e Sistemas
   impressao: "Serviço de Impressão"
   voip: "Telefonia VoIP"
-  rh: "Recursos Humanos / Seção Técnica de Gestão de Pessoas"
-  compras: "Seção Técnica de Materiais"
-  financas: "Seção Técnica de Finanças"
+  rh: "Seção Técnica de Gestão de Pessoas (STGP)"
+  compras: "Seção Técnica de Materiais (STM)"
+  financas: "Seção Técnica de Finanças (STF)"
 
 # Palavras-chave importantes que podem aparecer em buscas
 keywords:
@@ -89,6 +174,16 @@ keywords:
   - "fapesp"
   - "reserva"
   - "anfiteatro"
+  - "LDC"
+  - "LEPEC"
+  - "monitoria"
+  - "cotas"
+  - "créditos"
+  - "intercâmbios"
+  - "RDIDP"
+  - "ensino"
+  - "pesquisa"
+  - "extensão"
 
 # Pesos opcionais por departamento para influenciar a relevância da busca
 boosts:
@@ -96,3 +191,8 @@ boosts:
     computacao: 1.15
     biologia: 1.10
     psicologia: 1.05
+    fisica: 1.10
+    educacao: 1.10
+    educacaofisica: 1.05
+    matematica: 1.15
+    quimica: 1.0

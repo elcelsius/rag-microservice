@@ -1,6 +1,6 @@
 # Estágio 1: Base para GPU
 # Define a imagem base, a mesma do ambiente CPU.
-FROM python:3.11-slim AS base
+FROM docker.io/library/python:3.11-slim AS base
 
 WORKDIR /app
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -22,13 +22,16 @@ RUN python3 -m pip install --no-cache-dir --upgrade pip && \
         torchvision==0.19.0+cu121 \
         torchaudio==2.4.0+cu121
 
-# Instala as dependências Python para o ambiente de GPU.
-# O requirements-gpu.txt geralmente inclui 'faiss-gpu' e outras libs específicas.
+# --- Instalação de Dependências (Camada de Cache) ---
+# Copia apenas os arquivos de dependências primeiro.
+# Esta camada só será invalidada se os arquivos requirements mudarem.
 COPY requirements.txt /tmp/requirements.txt
 COPY requirements-gpu.txt /tmp/requirements-gpu.txt
 RUN pip3 install --no-cache-dir -r /tmp/requirements-gpu.txt
 
-# Copia o código da aplicação para o container.
+# --- Cópia do Código da Aplicação ---
+# Copia o restante do código. Se apenas o código-fonte mudar,
+# o Docker reutilizará a camada de dependências acima.
 COPY . /app
 
 # ===== Estágio 2: Imagem para o ETL (GPU) =====

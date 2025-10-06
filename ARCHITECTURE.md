@@ -20,6 +20,7 @@ flowchart LR
     subgraph LLM
       TRI[LLM Triagem]
       GEN[LLM GeraÃ§Ã£o de Resposta]
+      JUDGE[LLM Juiz]
     end
     subgraph ETL
       LD[Loaders<br/>(pdf, docx, md, txt, code, ...)]
@@ -33,6 +34,8 @@ flowchart LR
       TG[Triagem]
       AR[Auto Resolver<br/>(chama RAG)]
       PD[Pedir Info]
+      SE[Auto AvaliaÃ§Ã£o]
+      COR[CorreÃ§Ã£o]
     end
 
     U -->|Pergunta| A
@@ -47,7 +50,13 @@ flowchart LR
     AR -->|Rota 1| LEX
     LEX -->|se encontrou| GEN
     AR -->|Rota 2| MQ --> VS --> RER --> GEN
-    GEN -->|Resposta| A
+    
+    GEN -->|Resposta Gerada| SE
+    SE -->|Veredito| JUDGE
+    JUDGE -->|Aprovado| A
+    JUDGE -->|Reprovado| COR
+    COR -->|Resposta Corrigida| A
+
     A -->|Salva no Cache| C
 
     H --- A
@@ -62,12 +71,13 @@ flowchart LR
 ```
 
 ## Passo a passo (resumo)
-1. **Entrada e Cache**: o usuÃ¡rio envia uma pergunta para `POST /query`. Antes de consultar o RAG, a API verifica o cache Redis; se houver HIT, a resposta Ã© retornada imediatamente.
-2. **Triagem (em caso de MISS)**: se nÃ£o houver cache, o LLM pode classificar a intenÃ§Ã£o (ex.: pedir esclarecimento).
-3. **Rota Lexical**: se houver bons *hits* por sentenÃ§a (com bÃ´nus por departamento), responde diretamente com trechos/citaÃ§Ãµes.
-4. **Rota Vetorial**: caso contrÃ¡rio, gera *multi-queries* (sinÃ´nimos no `terms.yml`), consulta o FAISS, aplica o CrossEncoder e calcula a confianÃ§a.
-5. **Resgate/Resposta**: a resposta final Ã© montada pelo LLM e salva no cache Redis antes de ser retornada.
-6. **ETL**: arquivos em `data/` sÃ£o processados, indexados no FAISS e, ao final, o cache Redis Ã© invalidado para evitar respostas desatualizadas.
+1. **Entrada e Cache**: O usuÃ¡rio envia uma pergunta para `POST /query`. A API verifica o cache Redis; se houver HIT, a resposta Ã© retornada imediatamente.
+2. **Triagem (em caso de MISS)**: O agente classifica a intenÃ§Ã£o do usuÃ¡rio. Se a pergunta for clara, prossegue para a resolução; caso contrÃ¡rio, pede esclarecimentos.
+3. **ResoluÃ§Ã£o (RAG)**: O sistema busca informaÃ§Ãµes relevantes usando uma rota lexical (busca por palavras-chave) ou vetorial (busca por similaridade semÃ¢ntica no FAISS com reranker).
+4. **GeraÃ§Ã£o**: Com o contexto encontrado, o LLM gera uma resposta inicial.
+5. **AutoavaliaÃ§Ã£o (LLM-as-a-Judge)**: A resposta gerada Ã© submetida a um "LLM Juiz", que a avalia com base em critÃ©rios de fidelidade e relevÃ¢ncia.
+6. **CorreÃ§Ã£o ou Entrega**: Se a resposta for "Aprovada", ela Ã© enviada ao usuÃ¡rio e salva no cache. Se for "Reprovada", um nÃ³ de correÃ§Ã£o tenta reescrevê-la antes de ser enviada.
+7. **ETL**: Um processo separado e assÃ­ncrono ingere documentos, os processa e atualiza o Ã­ndice vetorial, invalidando o cache ao final para manter a consistÃªncia.
 
 ## Notas de ConfiguraÃ§Ã£o
 - **Cache**: defina `REDIS_HOST`, `REDIS_PORT` e opcionalmente `CACHE_TTL_SECONDS` no `.env` para habilitar o armazenamento de respostas.

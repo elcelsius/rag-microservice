@@ -1,49 +1,38 @@
-# Estágio 1: Base
-# Define uma imagem base com Python 3.11. Ideal para manter a imagem final leve.
-FROM python:3.11-slim AS base
+# Estágio 1: Base para CPU
+# Define a imagem base.
+FROM docker.io/library/python:3.11-slim AS base
 
-# Define o diretório de trabalho padrão dentro do container.
 WORKDIR /app
-
-# Variáveis de ambiente para otimizar a execução do Python em containers.
-# PYTHONDONTWRITEBYTECODE=1: Impede o Python de gerar arquivos .pyc.
-# PYTHONUNBUFFERED=1: Garante que os logs do Python sejam enviados diretamente para o terminal.
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
-# Instala dependências do sistema operacional (Debian).
-# - build-essential: Compiladores C/C++ necessários para algumas libs Python.
-# - git, curl: Ferramentas de desenvolvimento.
-# - poppler-utils: Necessário para o processamento de PDFs (usado por pypdf).
-# - tesseract-ocr: Ferramenta de OCR (pode ser usada em pipelines mais complexos).
+# Instala dependências de sistema comuns.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential git curl poppler-utils tesseract-ocr \
+    build-essential git curl poppler-utils tesseract-ocr cmake pkg-config \
  && rm -rf /var/lib/apt/lists/*
 
-# Instala as dependências Python para o ambiente de CPU.
-# Copia primeiro os arquivos de requirements para aproveitar o cache do Docker.
+# --- Instalação de Dependências (Camada de Cache) ---
+# Atualiza o pip e copia apenas os arquivos de dependências.
+# Esta camada só será invalidada se os arquivos requirements mudarem.
+RUN python3 -m pip install --no-cache-dir --upgrade pip
 COPY requirements.txt /tmp/requirements.txt
 COPY requirements-cpu.txt /tmp/requirements-cpu.txt
-# Atualiza o pip e instala as bibliotecas listadas nos arquivos, sem cache.
-RUN python3 -m pip install --no-cache-dir --upgrade pip && \
-    pip3 install --no-cache-dir -r /tmp/requirements-cpu.txt
+RUN pip3 install --no-cache-dir -r /tmp/requirements-cpu.txt
 
-# Copia todo o código da aplicação para o diretório de trabalho no container.
+# --- Cópia do Código da Aplicação ---
+# Copia o restante do código. Se apenas o código-fonte mudar,
+# o Docker reutilizará a camada de dependências acima.
 COPY . /app
 
-# ===== Estágio 2: Imagem para o ETL =====
-# Cria uma imagem final a partir do estágio 'base', otimizada para o ETL.
-# Esta imagem conterá apenas o necessário para executar o script de ETL.
+# ===== Estágio 2: Imagem para o ETL (CPU) =====
+# Usa a base com dependências de CPU para o processo de ETL.
 FROM base AS etl
 WORKDIR /app
-# Comando padrão que será executado quando um container for iniciado a partir desta imagem.
 CMD ["bash", "-lc", "python3 -u scripts/etl_build_index.py"]
 
-# ===== Estágio 3: Imagem para a API =====
-# Cria a imagem final para a API, também a partir do estágio 'base'.
+# ===== Estágio 3: Imagem para a API (CPU) =====
+# Usa a base com dependências de CPU para a API.
 FROM base AS ai_api
 WORKDIR /app
-# Expõe a porta 5000, onde a API Flask irá rodar.
 EXPOSE 5000
-# Comando padrão para iniciar a API.
 CMD ["python3", "-u", "api.py"]

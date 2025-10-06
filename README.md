@@ -25,10 +25,12 @@ Este projeto implementa um microserviÃ§o **RAG** (Retrieval-Augmented Generati
 **Fluxo alto nÃ­vel:**
 1. O usuÃ¡rio chama `POST /query` com sua pergunta.
 2. A API verifica o cache **Redis** para uma resposta existente. Se houver HIT, retorna imediatamente.
-3. Se nÃ£o houver cache (MISS), a API pode acionar o LLM de triagem para decidir o prÃ³ximo passo.
-4. **Rota Lexical**: busca por sentenÃ§as que batem com termos/sinÃ´nimos (com bÃ´nus por departamento); se bastar, responde direto.
-5. **Rota Vetorial**: gera *multi-queries* (`terms.yml`), consulta FAISS, reranqueia com CrossEncoder e calcula a confianÃ§a.
-6. O **Agente** (LangGraph) orquestra as aÃ§Ãµes (`AUTO_RESOLVER` x `PEDIR_INFO`) e grava a resposta final no cache antes de retornÃ¡-la.
+3. Se nÃ£o houver cache (MISS), o **Agente LangGraph** orquestra o fluxo, iniciando pela triagem.
+4. A **Triagem** decide se a pergunta pode ser resolvida diretamente ou se precisa de esclarecimentos.
+5. A **ResoluÃ§Ã£o (RAG)** busca o contexto via rota lexical ou vetorial (com reranker).
+6. O **LLM** gera uma resposta com base no contexto.
+7. A resposta passa por **AutoavaliaÃ§Ã£o (LLM-as-a-Judge)**. Se reprovada, uma etapa de **CorreÃ§Ã£o** Ã© acionada.
+8. A resposta final (aprovada ou corrigida) Ã© retornada e salva no cache.
 
 > Diagrama detalhado: veja tambÃ©m **ARCHITECTURE.md** (inclui invalidaÃ§Ã£o de cache no ETL).
 
@@ -52,6 +54,7 @@ flowchart LR
     subgraph LLM
       TRI[LLM Triagem]
       GEN[LLM GeraÃ§Ã£o de Resposta]
+      JUDGE[LLM Juiz]
     end
     subgraph ETL
       LD[Loaders<br/>(pdf, docx, md, txt, code, ...)]
@@ -65,6 +68,8 @@ flowchart LR
       TG[Triagem]
       AR[Auto Resolver<br/>(chama RAG)]
       PD[Pedir Info]
+      SE[Auto AvaliaÃ§Ã£o]
+      COR[CorreÃ§Ã£o]
     end
 
     U -->|Pergunta| A
@@ -79,7 +84,13 @@ flowchart LR
     AR -->|Rota 1| LEX
     LEX -->|se encontrou| GEN
     AR -->|Rota 2| MQ --> VS --> RER --> GEN
-    GEN -->|Resposta| A
+    
+    GEN -->|Resposta Gerada| SE
+    SE -->|Veredito| JUDGE
+    JUDGE -->|Aprovado| A
+    JUDGE -->|Reprovado| COR
+    COR -->|Resposta Corrigida| A
+
     A -->|Salva no Cache| C
 
     H --- A

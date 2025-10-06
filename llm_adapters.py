@@ -7,10 +7,9 @@ import os
 import asyncio
 from typing import Any, List, Optional, Dict
 
-import google.generativeai as genai
+from langchain_google_genai import GoogleGenerativeAI
 from langchain_core.language_models.llms import LLM
-from langchain_core.pydantic_v1 import root_validator
-
+from langchain_core.callbacks import CallbackManagerForLLMRun
 
 class RagasGoogleApiLLM(LLM):
     """Adaptador para usar o SDK do Google GenAI diretamente com o RAGAs.
@@ -21,35 +20,44 @@ class RagasGoogleApiLLM(LLM):
     """
     model_name: str
     model: Any = None
+    google_api_key: Optional[str] = None
 
-    @root_validator(pre=False, skip_on_failure=True)
-    def _initialize_model(cls, values: Dict[str, Any]) -> Dict[str, Any]:
-        """Inicializa o cliente do modelo Google GenAI após a validação do Pydantic."""
-        if "model_name" in values:
-            api_key = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
-            if not api_key:
-                raise ValueError("A chave da API do Google (GOOGLE_API_KEY ou GEMINI_API_KEY) não foi encontrada.")
-            genai.configure(api_key=api_key)
-            values["model"] = genai.GenerativeModel(values["model_name"])
-        return values
+    def __init__(self, **kwargs: Any):
+        super().__init__(**kwargs)
+        if not self.model_name:
+            raise ValueError("O argumento 'model_name' é obrigatório.")
+
+        self.google_api_key = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
+        if not self.google_api_key:
+            raise ValueError("A chave da API do Google (GOOGLE_API_KEY ou GEMINI_API_KEY) não foi encontrada.")
+        
+        try:
+            self.model = GoogleGenerativeAI(model=self.model_name, google_api_key=self.google_api_key)
+        except Exception as e:
+            raise ValueError(f"Falha ao inicializar o modelo GoogleGenerativeAI: {e}") from e
 
     @property
     def _llm_type(self) -> str:
         return "ragas_google_api_llm"
 
     def _call(
-        self, prompt: str, stop: Optional[List[str]] = None, **kwargs: Any
+        self, 
+        prompt: str, 
+        stop: Optional[List[str]] = None, 
+        run_manager: Optional[CallbackManagerForLLMRun] = None,
+        **kwargs: Any
     ) -> str:
         """Método de chamada síncrona obrigatório da classe LLM."""
         prompt_text = str(prompt)
         if self.model is None:
+            # Esta verificação é agora um pouco redundante, mas boa para segurança
             raise ValueError("Modelo GenAI não inicializado. Verifique a configuração.")
             
         try:
             # Extrai a temperatura dos kwargs ou usa 0.0 como padrão
             temperature = kwargs.get("temperature", 0.0)
-            response = self.model.generate_content(prompt_text, generation_config={"temperature": temperature})
-            return response.text
+            response = self.model.invoke(prompt_text, temperature=temperature)
+            return response
         except Exception as e:
             print(f"Erro na chamada da API do Google: {e}")
             return ""

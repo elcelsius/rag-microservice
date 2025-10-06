@@ -550,7 +550,7 @@ def _dept_slugs_in_question(q: str) -> List[str]:
 
 
 # ==== Funções de Extração de Termos ====
-def _candidate_terms(question: str) -> List[str]:
+def candidate_terms(question: str) -> List[str]:
     """Extrai termos candidatos da pergunta, incluindo e-mails e palavras com 3+ caracteres, excluindo stopwords."""
     q = (question or "").strip()
     if not q:
@@ -592,13 +592,13 @@ def _is_name_like(token: str) -> bool:
 
 def _name_token_match(token_norm: str, term_norm: str) -> bool:
     """Compara um token com um termo de busca usando a distância de Levenshtein normalizada."""
-    if abs(len(token_norm) - len(term_norm)) > 1:
+    if abs(len(token_norm) - len(term_norm)) > 2: # Aumenta a tolerância para nomes compostos
         return False
     sim = distance.Levenshtein.normalized_similarity(token_norm, term_norm)
-    return sim >= 0.86
+    return sim >= 0.80  # Aumenta a similaridade entre as palavras, sendo 1 palavra exatamente igual
 
 
-def _sentence_hits_by_name(text: str, terms: List[str]) -> List[Tuple[str, int]]:
+def sentence_hits_by_name(text: str, terms: List[str]) -> List[Tuple[str, int]]:
     """Encontra sentenças em um texto que correspondem a uma lista de termos de busca (nomes)."""
     out: List[Tuple[str, int]] = []
     if not text or not terms:
@@ -733,27 +733,7 @@ _PEDIR_INFO_PROMPT = load_prompt("prompts/pedir_info_prompt.txt")
 _RESPOSTA_PROMPT = load_prompt("prompts/resposta_final_prompt.txt")
 
 
-def _llm_triage(question: str, signals: Dict[str, Any]) -> Dict[str, Any]:
-    """Usa o LLM para fazer a triagem da pergunta, decidindo se deve responder ou pedir mais informações."""
-    if not _TRIAGE_PROMPT:
-        return {"action": "AUTO_RESOLVER", "ask": ""}
-    user_payload = f"Pergunta: {question}\n\nSinais:\n{signals}"
-    _, data = call_llm(_TRIAGE_PROMPT, user_payload, expect_json=True, max_tokens=150)
-    if isinstance(data, dict) and "action" in data:
-        return {"action": data.get("action"), "ask": data.get("ask", "")}
-    return {"action": "AUTO_RESOLVER", "ask": ""}
 
-
-def _llm_pedir_info(question: str, options: List[str], prefer_attr: str = "departamento") -> str:
-    """Usa o LLM para gerar uma pergunta de esclarecimento ao usuário."""
-    if not _PEDIR_INFO_PROMPT:
-        if options:
-            opts = ", ".join(options[:3])
-            return f"Encontrei múltiplas possibilidades: {opts}. Pode dizer qual delas?"
-        return "Pode informar o departamento/unidade para eu localizar a pessoa correta?"
-    payload = f"Pergunta original: {question}\nOpções (máx 3): {options[:3]}\nAtributo preferencial: {prefer_attr}"
-    text, _ = call_llm(_PEDIR_INFO_PROMPT, payload, expect_json=False, max_tokens=120)
-    return (text or "").strip() or "Pode informar o departamento/unidade?"
 
 
 def _format_direct(name: Optional[str], dept: Optional[str], contacts: Dict[str, List[str]],
@@ -783,7 +763,6 @@ def _llm_resposta_final(question: str, context_snippets: List[str], name: Option
     return text.strip()
 
 
-# ==== Pipeline Principal de Resposta ====
 def answer_question(question: str, embeddings_model: HuggingFaceEmbeddings, vectorstore: FAISS, *, k: int = 5,
                     fetch_k: int = 20, debug: bool = False) -> Dict[str, Any]:
     """
@@ -829,19 +808,22 @@ def answer_question(question: str, embeddings_model: HuggingFaceEmbeddings, vect
         all_docs = []
 
     dept_hints = _dept_hints_in_question(q)
-    terms = _candidate_terms(q)
+    terms = candidate_terms(q)
+    print(f"--- RAG DEBUG: Termos extraídos -> {terms} ---")
     lex_hits: List[Tuple[Document, List[Tuple[str, int]], int]] = []
 
     if terms and all_docs:
         for d in all_docs:
             src = (d.metadata.get("source") or "").lower()
             score_bonus = 8 if any(_strip_accents_lower(h) in src for h in dept_hints) else 0
-            hits = _sentence_hits_by_name(d.page_content or "", terms)
+            hits = sentence_hits_by_name(d.page_content or "", terms)
             if hits:
                 best = max(sc for _, sc in hits) + score_bonus
                 lex_hits.append((d, hits, best))
         lex_hits.sort(key=lambda x: x[2], reverse=True)
         lex_hits = lex_hits[:6]
+
+    print(f"--- RAG DEBUG: Hits da busca lexical -> {len(lex_hits)} ---")
 
     if (ROUTE_FORCE != "vector") and lex_hits:
         if debug:
@@ -857,12 +839,16 @@ def answer_question(question: str, embeddings_model: HuggingFaceEmbeddings, vect
                 sentence_snippets.append(s)
             if len(sentence_snippets) >= 6: break
 
+        print(f"--- RAG DEBUG: Snippets de contexto coletados -> {sentence_snippets} ---")
+
         contacts = _extract_contacts(sentence_snippets)
         name_terms = [t for t in terms if t.isalpha()]
         name = _extract_name(sentence_snippets, name_terms[0]) if name_terms else None
         # A citação antiga é usada apenas para adivinhar o depto, a nova será gerada
         temp_citations = [_as_citation(doc) for doc in similar_docs]
         dept = _guess_dept_from_source(temp_citations[0]["source"]) if temp_citations else None
+
+        print(f"--- RAG DEBUG: Entidades extraídas -> Nome: {name}, Depto: {dept}, Contatos: {contacts} ---")
 
         context_snippets = list(sentence_snippets)
         if name and (not contacts["phones"]):
@@ -874,16 +860,6 @@ def answer_question(question: str, embeddings_model: HuggingFaceEmbeddings, vect
                 phones = list(dict.fromkeys(contacts["phones"] + more["phones"]))
                 emails = list(dict.fromkeys(contacts["emails"] + more["emails"]))
                 contacts = {"phones": phones, "emails": emails}
-
-        # Triagem com LLM para decidir se pede esclarecimento.
-        triage_signals = {"dept_hints_in_question": dept_hints, "candidates_found": len(lex_hits),
-                          "have_name": bool(name)}
-        tri = _llm_triage(q, triage_signals)
-        if tri.get("action") == "PEDIR_INFO":
-            options = [nm for d, hits, _b in lex_hits[:3] if
-                       (nm := _extract_name([hits[0][0]], name_terms[0] if name_terms else "")) and nm]
-            ask = tri.get("ask") or _llm_pedir_info(q, options, prefer_attr="departamento")
-            return {"answer": ask, "citations": [], "context_found": False, "needs_clarification": True}
 
         # Gera a resposta final com base nos dados extraídos.
         t_llm = _now()

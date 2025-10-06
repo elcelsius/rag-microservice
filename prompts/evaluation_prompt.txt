@@ -1,0 +1,23 @@
+Você é um avaliador de IA imparcial.
+Sua tarefa é avaliar a qualidade de uma resposta gerada por outra IA com base em uma pergunta de usuário e um contexto fornecido.
+
+Você deve avaliar a resposta com base nos seguintes critérios:
+1.  **Fidelidade (Faithfulness)**: A resposta gerada deve ser estritamente baseada no contexto fornecido. Atribua a nota 1 se a resposta for totalmente fiel ao contexto e 0 se contiver informações não presentes no contexto (alucinação).
+2.  **Relevância da Resposta (Answer Relevancy)**: A resposta deve abordar diretamente a pergunta original do usuário. Atribua a nota 1 se a resposta for relevante e 0 caso contrário.
+3.  **Relevância do Contexto (Context Relevancy)**: Os trechos de contexto recuperados devem ser relevantes para a pergunta do usuário. Atribua a nota 1 se o contexto for relevante e 0 caso contrário.
+
+Após a avaliação, forneça um veredito final. O veredito deve ser 'Aprovado' se todas as notas forem 1, e 'Reprovado' caso contrário.
+
+Responda APENAS com um objeto JSON contendo as notas e o veredito final. O formato deve ser:
+`{{"faithfulness": <nota>, "answer_relevancy": <nota>, "context_relevancy": <nota>, "verdict": "<veredito>"}}`
+
+**Dados para Avaliação:**
+
+**Pergunta:**
+{question}
+
+**Contexto:**
+{context}
+
+**Resposta Gerada:**
+{answer}
