@@ -1,3 +1,4 @@
+from collections import Counter
 import pytest
 
 import api as api_module
@@ -20,12 +21,14 @@ def reset_state():
     api_module.APP_READY = False
     api_module.embeddings_model = None
     api_module.vectorstore = None
+    api_module.METRICS = Counter()
     yield
     api_module.FAISS_OK = False
     api_module.LLM_OK = False
     api_module.APP_READY = False
     api_module.embeddings_model = None
     api_module.vectorstore = None
+    api_module.METRICS = Counter()
 
 
 def test_root_endpoint(client):
@@ -102,3 +105,40 @@ def test_agent_endpoint_success(client, mocker):
     assert response.status_code == 200
     assert response.get_json() == stub
     patched.assert_called_once()
+
+
+def test_query_endpoint_low_confidence_metric(client, mocker):
+    api_module.FAISS_OK = True
+    api_module.embeddings_model = object()
+    api_module.vectorstore = object()
+    answer_stub = {
+        "answer": "preciso de mais detalhes",
+        "citations": [],
+        "context_found": False,
+        "confidence": 0.1,
+    }
+    mocker.patch('api.answer_question', return_value=answer_stub)
+
+    response = client.post('/query', json={'question': 'Qual o telefone do laboratório X?'})
+
+    assert response.status_code == 200
+    assert api_module.METRICS['queries_low_confidence_total'] == 1
+
+
+def test_agent_endpoint_low_confidence_metric(client, mocker):
+    api_module.FAISS_OK = True
+    api_module.LLM_OK = True
+    api_module.embeddings_model = object()
+    api_module.vectorstore = object()
+    stub = {
+        "answer": "Preciso de mais informações",
+        "citations": [],
+        "action": "PEDIR_INFO",
+        "meta": {'refine_attempts': 0, 'refine_success': False, 'confidence': 0.2},
+    }
+    mocker.patch('api.run_agent', return_value=stub)
+
+    response = client.post('/agent/ask', json={'question': 'Onde fica a biblioteca?'})
+
+    assert response.status_code == 200
+    assert api_module.METRICS['agent_low_confidence_total'] == 1

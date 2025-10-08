@@ -132,7 +132,7 @@ Ambos os endpoints retornam o campo opcional `"needs_clarification"` quando o si
 
 - Quando o RAG entrega baixa confianca, o agente tenta ate duas reformulacoes automaticas antes de pedir mais contexto ao usuario.
 - As novas consultas sao geradas via LLM (`refine_query_prompt.txt`) e reutilizam o pipeline completo de RAG, registrando o historico em `meta.refine_history`.
-- Novas metricas expostas em `/metrics`: `agent_refine_attempts_total`, `agent_refine_success_total`, `agent_refine_exhausted_total`.
+- Novas metricas expostas em `/metrics`: `agent_refine_attempts_total`, `agent_refine_success_total`, `agent_refine_exhausted_total` e `agent_low_confidence_total`.
 - Ajuste a estrategia com `AGENT_REFINE_ENABLED`, `AGENT_REFINE_MAX_ATTEMPTS`, `AGENT_REFINE_CONFIDENCE` e o limiar de confiança via `CONFIDENCE_MIN_AGENT`.
 - A suite `python -m pytest tests/test_agent_workflow.py` valida fluxos de sucesso e fallback.
 

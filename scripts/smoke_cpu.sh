@@ -139,6 +139,11 @@ if [[ "$READY" != "true" || "$FAISS" != "true" || "$LLM" != "true" ]]; then
 fi
 ok "ready:$READY faiss:$FAISS llm:$LLM"
 
+step "Smoke API (/query, /agent/ask, /metrics)"
+run_with_spinner "scripts/smoke_api.py" python scripts/smoke_api.py
+ok "smoke API"
+
+
 step "5/7 Consulta via 5000 (debug=true)"
 if ! R5000=$(curl -fsS -H "Content-Type: application/json" -d "$(json_payload true)" http://localhost:5000/query); then
   err "falha ao chamar porta 5000"

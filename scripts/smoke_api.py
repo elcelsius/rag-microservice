@@ -62,7 +62,7 @@ def check_metrics(base: str) -> SmokeResult:
         resp = _http_get(f"{base}/metrics")
         data = resp.json()
         counters = data.get("counters", {})
-        expected = {"cache_hits_total", "cache_misses_total", "agent_refine_attempts_total"}
+        expected = {"cache_hits_total", "cache_misses_total", "agent_refine_attempts_total", "queries_low_confidence_total", "agent_low_confidence_total"}
         missing = sorted(expected - counters.keys())
         if missing:
             return SmokeResult("/metrics", False, f"counters faltando: {', '.join(missing)}")

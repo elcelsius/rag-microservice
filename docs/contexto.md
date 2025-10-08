@@ -181,6 +181,6 @@ Após o start:
   1. `python -m pytest` (ou o subconjunto pertinente) no ambiente local.
   2. `./scripts/smoke_cpu.sh` (invoca `scripts/smoke_api.py` para validar `/query`, `/agent/ask`, `/metrics` real).
   3. `docker-compose -f docker-compose.cpu.yml up --build` seguido de `docker-compose -f docker-compose.cpu.yml logs -f ai_projeto_api` para confirmar inicialização limpa de FAISS, Redis, LLM e ausência de exceções.
-  4. `curl http://localhost:5000/healthz` (status 200) e inspeção dos contadores em `/metrics` (`cache_hits_total`, `agent_refine_*`, etc.).
+  4. `curl http://localhost:5000/healthz` (status 200) e inspeção dos contadores em `/metrics` (`cache_hits_total`, `queries_low_confidence_total`, `agent_low_confidence_total`, `agent_refine_*`, etc.).
 - **Observabilidade como gate**: se os logs indicarem regressão (latência alta, confiança zerada, cache sem hits), interromper novas features até diagnosticar.
 - **Documentação/ENV**: sempre que criar um toggle ou ajuste, atualizar README/docs e espelhar o valor padrão em `.env.example`.

@@ -47,9 +47,11 @@ METRICS = Counter()
 START_TS = time.time()
 METRICS["cache_hits_total"] = 0
 METRICS["cache_misses_total"] = 0
+METRICS["queries_low_confidence_total"] = 0
 METRICS["agent_refine_attempts_total"] = 0
 METRICS["agent_refine_success_total"] = 0
 METRICS["agent_refine_exhausted_total"] = 0
+METRICS["agent_low_confidence_total"] = 0
 
 app = Flask(__name__)
 # Habilita o CORS para permitir que a UI (em outro domínio/porta) chame a API.
@@ -233,6 +235,7 @@ def query():
     res = None
     status = "ok"
     confidence_threshold = CONFIDENCE_MIN_QUERY
+    low_confidence = False
 
     if not debug_flag:
         cache_payload = _query_cache_payload(
@@ -268,10 +271,16 @@ def query():
         METRICS["queries_total"] += 1
         if res.get("needs_clarification"):
             METRICS["queries_ambiguous"] += 1
+            low_confidence = True
         elif not res.get("context_found"):
             METRICS["queries_not_found"] += 1
+            low_confidence = True
         else:
             METRICS["queries_answered"] += 1
+
+        confidence_value = res.get("confidence")
+        if confidence_value is not None and confidence_value < confidence_threshold:
+            low_confidence = True
 
         if (
             not debug_flag
@@ -282,12 +291,16 @@ def query():
         ):
             cache_store(QUERY_NAMESPACE, cache_payload, res, key=cache_key)
 
+        if low_confidence:
+            METRICS["queries_low_confidence_total"] += 1
+
     log = {
         "rid": rid,
         "status": status,
         "took_ms": int((time.time() - ts0) * 1000),
         "question": question[:400],
         "confidence_threshold": confidence_threshold,
+        "low_confidence": low_confidence,
     }
     print(json.dumps(log, ensure_ascii=False), flush=True)
 
@@ -341,6 +354,7 @@ def agent_ask():
     cached_response, cache_key, cache_available = cache_fetch(AGENT_NAMESPACE, cache_payload)
 
     served_from_cache = False
+    low_confidence = False
     if cache_available and cached_response is not None:
         METRICS["cache_hits_total"] += 1
         res = cached_response
@@ -367,11 +381,13 @@ def agent_ask():
 
     success = not status.startswith("error")
     meta: Dict[str, Any] = res.get("meta") or {}
+    meta_confidence = meta.get("confidence")
 
     if success:
         METRICS["agent_queries_total"] += 1
         if res.get("action") == "PEDIR_INFO":
             METRICS["agent_clarification_needed"] += 1
+            low_confidence = True
         else:
             METRICS["agent_answered"] += 1
 
@@ -384,8 +400,14 @@ def agent_ask():
                 else:
                     METRICS["agent_refine_exhausted_total"] += 1
 
+        if meta_confidence is not None and meta_confidence < confidence_threshold:
+            low_confidence = True
+
         if cache_available and cached_response is None and "error" not in res:
             cache_store(AGENT_NAMESPACE, cache_payload, res, key=cache_key)
+
+        if low_confidence:
+            METRICS["agent_low_confidence_total"] += 1
 
     log = {
         "rid": rid,
@@ -393,6 +415,7 @@ def agent_ask():
         "took_ms": int((time.time() - ts0) * 1000),
         "question": question[:400],
         "confidence_threshold": confidence_threshold,
+        "low_confidence": low_confidence,
     }
     if meta:
         log["meta"] = {
