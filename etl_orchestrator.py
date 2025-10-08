@@ -17,6 +17,11 @@ from langchain.schema import Document
 # Importa o módulo de loaders unificado
 import loaders
 
+try:
+    from cache_backend import invalidate_all_responses
+except Exception:  # pragma: no cover - cache opcional
+    invalidate_all_responses = None  # type: ignore
+
 # Carrega variáveis de ambiente do arquivo .env
 load_dotenv()
 
@@ -39,6 +44,15 @@ SUPPORTED_EXTENSIONS = {
     ".pdf", ".docx", ".md", ".txt", ".php", ".sql", ".json", ".xml",
     ".ini", ".config", ".example", ".yml", ".yaml", ".csv"
 }
+
+def _invalidate_response_cache(reason: str) -> None:
+    if invalidate_all_responses is None:
+        return
+    try:
+        removed = invalidate_all_responses()
+        print(f"INFO: Cache de respostas invalidado ({removed} chave(s)) após {reason}.")
+    except Exception as exc:
+        print(f"WARN: Falha ao invalidar cache de respostas: {exc}")
 
 # --- FUNÇÕES DE BANCO DE DADOS E ARQUIVOS ---
 
@@ -270,8 +284,10 @@ def run_full_rebuild():
 
         vector_store.save_local(VECTOR_STORE_PATH)
         print(f"\nSUCCESS: Novo índice FAISS salvo em '{VECTOR_STORE_PATH}' com {vector_store.index.ntotal} vetores.")
+        _invalidate_response_cache("rebuild completo")
     else:
         print("WARNING: Nenhum documento foi processado. O índice não foi criado.")
+        _invalidate_response_cache("rebuild sem documentos")
 
 def run_incremental_update():
     """Executa uma atualização incremental real, lidando com arquivos novos, modificados e excluídos."""
@@ -314,6 +330,7 @@ def run_incremental_update():
 
         vector_store.save_local(VECTOR_STORE_PATH)
         print(f"\nSUCCESS: Índice FAISS atualizado e salvo. Total de vetores: {vector_store.index.ntotal}")
+        _invalidate_response_cache("atualização incremental")
 
 
 if __name__ == "__main__":

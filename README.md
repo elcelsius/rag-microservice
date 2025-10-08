@@ -118,6 +118,24 @@ Ambos os endpoints retornam o campo opcional `"needs_clarification"` quando o si
 
 ---
 
+## Cache de Respostas (Redis)
+
+- O `docker-compose.*` agora sobe um serviço Redis (`ai_redis`) que atende ao cache de respostas.
+- Configure `REDIS_URL` (padrão `redis://ai_redis:6379/0`) e `CACHE_TTL_SECONDS` (12 horas) para controlar a camada de cache.
+- O ETL invalida o cache automaticamente ao final de rebuilds e atualizações incrementais, e a variável `INDEX_VERSION` faz parte da assinatura das chaves.
+- `/metrics` passou a expor `cache_hits_total` e `cache_misses_total`, permitindo acompanhar a eficiência do cache.
+- Para garantir o funcionamento, há testes dedicados: `python -m pytest tests/test_api_cache.py`.
+
+---
+
+## Auto-refine do Agente LangGraph
+
+- Quando o RAG entrega baixa confianca, o agente tenta ate duas reformulacoes automaticas antes de pedir mais contexto ao usuario.
+- As novas consultas sao geradas via LLM (`refine_query_prompt.txt`) e reutilizam o pipeline completo de RAG, registrando o historico em `meta.refine_history`.
+- Novas metricas expostas em `/metrics`: `agent_refine_attempts_total`, `agent_refine_success_total`, `agent_refine_exhausted_total`.
+- Ajuste a estrategia com `AGENT_REFINE_ENABLED`, `AGENT_REFINE_MAX_ATTEMPTS`, `AGENT_REFINE_CONFIDENCE` e o limiar de confiança via `CONFIDENCE_MIN_AGENT`.
+- A suite `python -m pytest tests/test_agent_workflow.py` valida fluxos de sucesso e fallback.
+
 ## Avaliação do Sistema
 
 O projeto inclui um script de avaliação de ponta a ponta que usa `ragas` e `langchain-google-genai` para calcular métricas automáticas.
@@ -134,6 +152,8 @@ python eval_rag.py --dataset tests/eval_sample.csv --out reports/
 Use `--agent-endpoint` e `--legacy-endpoint` para apontar para URLs específicas quando necessário.
 
 O relatório consolida métricas de **Recuperação** (Recall, MRR, nDCG). Quando a chave `GOOGLE_API_KEY` está definida, o script também produz as métricas de **Geração** (Faithfulness e Answer Relevancy) via RAGAs.
+> **Checklist rápido:** o script agora emite mensagens explícitas quando as dependências do RAGAs ou a `GOOGLE_API_KEY` estão ausentes. O teste `python -m pytest tests/test_eval_rag.py` cobre esses cenários e garante proteção regressiva.
+
 ## Executando os Testes
 
 O projeto utiliza `pytest` para testes automatizados. Para executar a suíte de testes:
@@ -182,8 +202,9 @@ As principais variáveis de ambiente para configurar o comportamento do sistema 
 - **Embeddings/FAISS**: `EMBEDDINGS_MODEL` (ETL e API precisam usar o mesmo valor) e `FAISS_STORE_DIR`.
 - **Reranker**: `RERANKER_PRESET` (`off | fast | balanced | full`) e `RERANKER_ENABLED=true`. O preset `balanced` usa `jinaai/jina-reranker-v1-base-multilingual` (boa qualidade no CPU). Ajuste `RERANKER_CANDIDATES`, `RERANKER_TOP_K`, `RERANKER_MAX_LEN` conforme latência desejada.
 - **Busca híbrida**: `HYBRID_ENABLED` (default `true`), `LEXICAL_THRESHOLD` (default `90`), `DEPT_BONUS`, `MAX_PER_SOURCE`.
-- **Multi-query e confiança**: `MQ_ENABLED`, `MQ_VARIANTS`, `CONFIDENCE_MIN` e `REQUIRE_CONTEXT`.
+- **Multi-query e confiança**: `MQ_ENABLED`, `MQ_VARIANTS`, `CONFIDENCE_MIN` (com overrides opcionais `CONFIDENCE_MIN_QUERY`/`CONFIDENCE_MIN_AGENT`) e `REQUIRE_CONTEXT`.
 - **Formato da resposta**: `STRUCTURED_ANSWER` (markdown com resumo/fontes) e `MAX_SOURCES`.
+- **Agente (auto-refine)**: `AGENT_REFINE_ENABLED`, `AGENT_REFINE_MAX_ATTEMPTS`, `AGENT_REFINE_CONFIDENCE`.
 
 Caso queira forçar uma rota específica para debug, use `ROUTE_FORCE=lexical|vector`.
 

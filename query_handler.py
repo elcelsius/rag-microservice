@@ -127,6 +127,32 @@ LEXICAL_THRESHOLD= _env_int("LEXICAL_THRESHOLD", 90, 60, 100)  # antes estava fi
 DEPT_BONUS       = _env_int("DEPT_BONUS", 8, 0, 100)      # antes estava fixo (=8) no cálculo de score por depto
 MAX_PER_SOURCE   = _env_int("MAX_PER_SOURCE", 2, 1, 10)   # limita diversidade por 'source' no merge híbrido
 
+CACHE_DEFAULT_VERSION = os.getenv("INDEX_VERSION", "0")
+
+
+def pipeline_cache_fingerprint() -> Dict[str, Any]:
+    """Snapshot das configs que impactam a forma como o RAG responde."""
+    return {
+        "cache_version": CACHE_DEFAULT_VERSION,
+        "confidence_min_default": CONFIDENCE_MIN,
+        "confidence_min_query": CONFIDENCE_MIN_QUERY,
+        "confidence_min_agent": CONFIDENCE_MIN_AGENT,
+        "require_context": REQUIRE_CONTEXT,
+        "structured_answer": STRUCTURED_ANSWER,
+        "route_force": ROUTE_FORCE,
+        "mq_enabled": MQ_ENABLED,
+        "mq_variants": MQ_VARIANTS,
+        "hybrid_enabled": HYBRID_ENABLED,
+        "reranker_preset": RERANKER_PRESET,
+        "reranker_enabled": RERANKER_ENABLED,
+        "reranker_candidates": RERANKER_CANDIDATES,
+        "reranker_top_k": RERANKER_TOP_K,
+        "reranker_max_len": RERANKER_MAX_LEN,
+        "max_per_source": MAX_PER_SOURCE,
+    }
+
+
+
 # ==== Configurações de Multi-Query e Confiança ====
 # Ativa ou desativa a geração de múltiplas variações da pergunta do usuário para busca.
 MQ_ENABLED = os.getenv("MQ_ENABLED", "true").lower() == "true"
@@ -134,6 +160,8 @@ MQ_ENABLED = os.getenv("MQ_ENABLED", "true").lower() == "true"
 MQ_VARIANTS = int(os.getenv("MQ_VARIANTS", "3"))
 # Limiar mínimo de confiança do reranker para considerar uma resposta válida.
 CONFIDENCE_MIN = float(os.getenv("CONFIDENCE_MIN", "0.32"))
+CONFIDENCE_MIN_QUERY = float(os.getenv("CONFIDENCE_MIN_QUERY", str(CONFIDENCE_MIN)))
+CONFIDENCE_MIN_AGENT = float(os.getenv("CONFIDENCE_MIN_AGENT", str(CONFIDENCE_MIN)))
 # Exige que um contexto seja encontrado nos documentos para gerar uma resposta.
 REQUIRE_CONTEXT = os.getenv("REQUIRE_CONTEXT", "true").lower() == "true"
 
@@ -1351,8 +1379,16 @@ def _log_telemetry_event(question: str, dbg: dict, result: dict):
 
 
 # ==== Pipeline Principal de Resposta (Refatorado) ====
-def answer_question(question: str, embeddings_model: HuggingFaceEmbeddings, vectorstore: FAISS, *, k: int = 5,
-                    fetch_k: int = 20, debug: bool = False) -> Dict[str, Any]:
+def answer_question(
+    question: str,
+    embeddings_model: HuggingFaceEmbeddings,
+    vectorstore: FAISS,
+    *,
+    k: int = 5,
+    fetch_k: int = 20,
+    debug: bool = False,
+    confidence_min: float | None = None,
+) -> Dict[str, Any]:
     """
     Pipeline principal para responder a uma pergunta usando uma abordagem híbrida (busca lexical e vetorial).
     Esta função foi refatorada para orquestrar o fluxo de RAG através de funções auxiliares.
@@ -1360,6 +1396,8 @@ def answer_question(question: str, embeddings_model: HuggingFaceEmbeddings, vect
     t0 = _now()
     q = _norm_ws(question)
     dbg = _initialize_debug_payload(q)
+    threshold = confidence_min if confidence_min is not None else CONFIDENCE_MIN
+    dbg["confidence_threshold"] = threshold
 
     if not q:
         return {"answer": "Não entendi a pergunta. Pode reformular?", "citations": [], "context_found": False}
@@ -1401,7 +1439,7 @@ def answer_question(question: str, embeddings_model: HuggingFaceEmbeddings, vect
     final_docs, conf = _rerank_and_get_confidence(merged_cands, q, dbg)
 
     # 7. Verificar se a confiança é suficiente para responder
-    if (not final_docs) or (conf < CONFIDENCE_MIN):
+    if (not final_docs) or (conf < threshold):
         if REQUIRE_CONTEXT:
             result = _build_low_confidence_response(q, conf, lex_hits)
             dbg["timing_ms"]["total"] = _elapsed_ms(t0)

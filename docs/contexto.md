@@ -30,7 +30,7 @@ O pipeline em `query_handler.py` combina heurísticas lexicais e vetoriais. A se
 4. **Busca vetorial (FAISS)**: recuperação baseada em embeddings (`HuggingFaceEmbeddings`) com o índice FAISS persistido em disco.
 5. **Fusão híbrida**: combinação dos resultados lexicais e vetoriais (`HYBRID_ENABLED`), com possibilidade de forçar rotas via `ROUTE_FORCE`.
 6. **Reranqueamento**: aplicação de um CrossEncoder (quando disponível) ou fallback HuggingFace para refinar a ordem (`RERANKER_PRESET`, `RERANKER_*`).
-7. **Avaliação de confiança**: cálculo de um score agregado; abaixo de `CONFIDENCE_MIN` e com `REQUIRE_CONTEXT=true` o sistema responde pedindo mais detalhes, sugerindo departamentos quando possível.
+7. **Avaliação de confiança**: cálculo de um score agregado; abaixo do limiar ativo (`CONFIDENCE_MIN` ou overrides por rota) e com `REQUIRE_CONTEXT=true` o sistema responde pedindo mais detalhes, sugerindo departamentos quando possível.
 8. **Geração estruturada**: chamada ao LLM via `llm_client.call_llm`, montagem de resposta em Markdown com `### Resumo` e `### Fontes` e citações provenientes dos metadados.
 9. **Telemetria e debug**: registro de métricas de tempo, rota escolhida e confiança por meio de `telemetry.log_event` quando `LOG_DIR` está configurado.
 
@@ -169,3 +169,18 @@ Após o start:
 8. **Respostas do RAG**: manter formato Markdown com `### Resumo` e `### Fontes`.
 9. **Prompts/LLM**: não versionar chaves; prompts vivem em `prompts/`. Evitar alterar a intenção dos prompts sem justificativa.
 10. **Compose/DB**: ao criar strings de conexão em Docker, usar o serviço `ai_postgres` na porta interna `5432` (ver `docker-compose.*`).
+
+---
+
+## 11. Fluxo incremental com telemetria e verificações
+
+- **Sempre por partes**: planeje uma entrega pequena, implemente, valide e observe os logs **antes** de iniciar a próxima.
+- **Docstrings e comentários**: toda função/rota nova deve ter docstring descrevendo entradas/saídas; se houver lógica pouco óbvia, incluir comentário curto para facilitar manutenção futura.
+- **Logs obrigatórios**: novos trechos devem registrar início/fim, status (`ok`/erro) e `elapsed_ms`. Prefira logs estruturados (JSON) e reutilize `telemetry.log_event` quando aplicável.
+- **Checklist de validação**:
+  1. `python -m pytest` (ou o subconjunto pertinente) no ambiente local.
+  2. `./scripts/smoke_cpu.sh` (invoca `scripts/smoke_api.py` para validar `/query`, `/agent/ask`, `/metrics` real).
+  3. `docker-compose -f docker-compose.cpu.yml up --build` seguido de `docker-compose -f docker-compose.cpu.yml logs -f ai_projeto_api` para confirmar inicialização limpa de FAISS, Redis, LLM e ausência de exceções.
+  4. `curl http://localhost:5000/healthz` (status 200) e inspeção dos contadores em `/metrics` (`cache_hits_total`, `agent_refine_*`, etc.).
+- **Observabilidade como gate**: se os logs indicarem regressão (latência alta, confiança zerada, cache sem hits), interromper novas features até diagnosticar.
+- **Documentação/ENV**: sempre que criar um toggle ou ajuste, atualizar README/docs e espelhar o valor padrão em `.env.example`.

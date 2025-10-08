@@ -6,6 +6,7 @@ A telemetria registra um JSON por linha em `LOG_DIR/queries.log` com:
 - `confidence` (máximo do reranker)
 - `timing` (`lexical_ms`, `faiss_ms`, `rerank_ms`, `total_ms`)
 - `ctx_docs` (quantidade de citações usadas)
+- `meta.refine_attempts`, `meta.confidence`, `meta.refine_success`, `meta.refine_threshold` (limiar usado na rodada)
 
 ## Configuração (.env)
 ```

@@ -35,9 +35,13 @@ services:
       # Força o uso de CPU para o ETL, mesmo em um ambiente com GPU, para economizar recursos.
       CUDA_VISIBLE_DEVICES: ""
       DATABASE_URL: "postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@ai_postgres:5432/${POSTGRES_DB}"
+      REDIS_URL: ${REDIS_URL:-redis://ai_redis:6379/0}
+      CACHE_TTL_SECONDS: ${CACHE_TTL_SECONDS:-43200}
     depends_on:
       ai_postgres:
         condition: service_healthy
+      ai_redis:
+        condition: service_started
     volumes:
       - ./data:/app/data:ro
       - vector_store:/app/vector_store
@@ -59,9 +63,13 @@ services:
     environment:
       DATABASE_URL: "postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@ai_postgres:5432/${POSTGRES_DB}"
       FAISS_STORE_DIR: "/app/vector_store/faiss_index"
+      REDIS_URL: ${REDIS_URL:-redis://ai_redis:6379/0}
+      CACHE_TTL_SECONDS: ${CACHE_TTL_SECONDS:-43200}
     depends_on:
       ai_etl:
         condition: service_completed_successfully
+      ai_redis:
+        condition: service_started
     volumes:
       - vector_store:/app/vector_store:ro
       - ./prompts:/app/prompts:ro
@@ -83,6 +91,14 @@ services:
             - driver: nvidia
               count: all
               capabilities: [gpu]
+
+  ai_redis:
+    image: redis:7-alpine
+    container_name: ai_redis
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    restart: unless-stopped
 
   # Serviço da Interface Web (UI)
   ai_web_ui:

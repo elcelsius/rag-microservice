@@ -51,6 +51,7 @@ Documento vivo com prioridades, tarefas acionáveis, critérios de aceite e coma
   - `ragas_available: true`
   - `generation_metrics_ragas` preenchido (p.ex.: `faithfulness`, `answer_relevancy`).
 - Comando `python eval_rag.py ...` retorna **exit code 0**.
+- Testes locais: `python -m pytest tests/test_eval_rag.py` garantem mensagens claras quando a execução do RAGAs não é possível (deps ou `GOOGLE_API_KEY`).
 
 ### 2.3 CI (gate rápido)
 ```yaml
@@ -157,6 +158,8 @@ def answer_question(..., debug=False):
 - Aumento de `faithfulness` e/ou `answer_relevancy` (RAGAs) em subset do dataset.
 - Limite de iterações configurável (ex.: máx 2 rewrites).
 
+> **Status:** Implementado (`meta.refine_history`, métricas `agent_refine_*`, testes `tests/test_agent_workflow.py`).
+
 ---
 
 ## 5) Refino do pipeline RAG
@@ -217,11 +220,12 @@ scrape_configs:
 - [ ] (Redis) Serviço no compose + `REDIS_URL` e `CACHE_TTL_SECONDS` no `.env`.
 - [ ] (Cache) Implementar no `/query` e `/agent/ask`; métricas de hit/miss.
 - [ ] (ETL) Invalidação/versão do cache ao fim do ETL.
-- [ ] (Agente) Nó `auto_refine` + telemetria; limite de iteração.
+- [x] (Agente) Nó `auto_refine` + telemetria; limite de iteração.
 - [ ] (RRF) Fusão de ranqueamento híbrido com `RRF_K`.
 - [ ] (Chunking) Experimentação com grade e, se possível, chunking semântico.
 - [ ] (Observabilidade) Exportar métricas para Prometheus; logs estruturados.
 - [ ] (Docs) Atualizar `README` com "Avaliação", "Cache" e "Observabilidade".
+- [x] (Smokes) Integrar `scripts/smoke_api.py` ao pipeline de CI (futuro).
 
 ---
 

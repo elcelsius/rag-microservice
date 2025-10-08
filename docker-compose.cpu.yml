@@ -36,9 +36,13 @@ services:
     environment:
       # A URL do banco de dados é construída dinamicamente com as variáveis de ambiente.
       DATABASE_URL: "postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@ai_postgres:5432/${POSTGRES_DB}"
+      REDIS_URL: ${REDIS_URL:-redis://ai_redis:6379/0}
+      CACHE_TTL_SECONDS: ${CACHE_TTL_SECONDS:-43200}
     depends_on:
       ai_postgres:
         condition: service_healthy
+      ai_redis:
+        condition: service_started
     volumes:
       - ./data:/app/data:ro
       - vector_store:/app/vector_store
@@ -62,9 +66,13 @@ services:
       FAISS_STORE_DIR: "/app/vector_store/faiss_index"
       HF_ALLOW_CODE_EVAL: "1"
       TRANSFORMERS_NO_ADVISORY_WARNINGS: "1"
+      REDIS_URL: ${REDIS_URL:-redis://ai_redis:6379/0}
+      CACHE_TTL_SECONDS: ${CACHE_TTL_SECONDS:-43200}
     depends_on:
       ai_etl:
         condition: service_completed_successfully
+      ai_redis:
+        condition: service_started
     volumes:
       # O vector_store é montado como somente leitura (ro), uma boa prática de segurança.
       - vector_store:/app/vector_store:ro
@@ -78,6 +86,14 @@ services:
       timeout: 5s
       retries: 20
       start_period: 30s # Tempo extra para o modelo carregar antes do primeiro healthcheck.
+    restart: unless-stopped
+
+  ai_redis:
+    image: redis:7-alpine
+    container_name: ai_redis
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
     restart: unless-stopped
 
   # Serviço da Interface Web (UI)

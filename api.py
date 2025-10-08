@@ -2,6 +2,7 @@
 from __future__ import annotations
 import os, time, uuid, json
 from collections import Counter
+from typing import Any, Dict, List
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from langchain_core.messages import HumanMessage, AIMessage
@@ -16,9 +17,20 @@ except ImportError:
     _llm_lazy_client = None
 
 # Importa a função de RAG direto e a função de execução do agente.
-from query_handler import answer_question
+from query_handler import (
+    answer_question,
+    pipeline_cache_fingerprint,
+    CONFIDENCE_MIN_QUERY,
+    CONFIDENCE_MIN_AGENT,
+)
 from agent_workflow import run_agent
-from text_normalizer import normalize_documents
+from text_normalizer import normalize_documents, normalize_text
+from cache_backend import (
+    AGENT_NAMESPACE,
+    QUERY_NAMESPACE,
+    cache_fetch,
+    cache_store,
+)
 
 # --- Variáveis de Estado de Prontidão ---
 APP_READY = False
@@ -33,6 +45,11 @@ EMBEDDINGS_MODEL = os.getenv("EMBEDDINGS_MODEL", "intfloat/multilingual-e5-large
 # --- Métricas e Inicialização do Flask ---
 METRICS = Counter()
 START_TS = time.time()
+METRICS["cache_hits_total"] = 0
+METRICS["cache_misses_total"] = 0
+METRICS["agent_refine_attempts_total"] = 0
+METRICS["agent_refine_success_total"] = 0
+METRICS["agent_refine_exhausted_total"] = 0
 
 app = Flask(__name__)
 # Habilita o CORS para permitir que a UI (em outro domínio/porta) chame a API.
@@ -43,6 +60,54 @@ CORS(app)
 # Esta parte do código roda apenas uma vez, quando a aplicação é iniciada.
 embeddings_model = None
 vectorstore = None
+
+def _normalize_for_cache(text: str) -> str:
+    normalized = normalize_text(text or "")
+    return " ".join(normalized.split()).lower()
+
+
+def _base_cache_context() -> Dict[str, Any]:
+    return {
+        "index_version": os.getenv("INDEX_VERSION", "0"),
+        "google_model": os.getenv("GOOGLE_MODEL", ""),
+        "embeddings_model": EMBEDDINGS_MODEL,
+    }
+
+
+def _query_cache_payload(question: str, *, k: int, fetch_k: int, confidence_min: float) -> Dict[str, Any]:
+    payload = {
+        "question": _normalize_for_cache(question),
+        "k": k,
+        "fetch_k": fetch_k,
+        "confidence_min_override": confidence_min,
+    }
+    payload.update(_base_cache_context())
+    payload.update(pipeline_cache_fingerprint())
+    return payload
+
+
+def _normalize_messages_for_cache(raw_messages: List[Dict[str, Any]]) -> List[Dict[str, str]]:
+    normalized: List[Dict[str, str]] = []
+    for msg in raw_messages:
+        if not isinstance(msg, dict):
+            continue
+        role = str(msg.get("role", "user")).strip().lower() or "user"
+        content = _normalize_for_cache(str(msg.get("content", "")))
+        normalized.append({"role": role, "content": content})
+    return normalized
+
+
+def _agent_cache_payload(question: str, normalized_messages: List[Dict[str, str]], *, confidence_min: float) -> Dict[str, Any]:
+    payload = {
+        "question": _normalize_for_cache(question),
+        "messages": normalized_messages,
+        "agent_version": os.getenv("AGENT_CACHE_VERSION", "1"),
+        "confidence_min_override": confidence_min,
+    }
+    payload.update(_base_cache_context())
+    payload.update(pipeline_cache_fingerprint())
+    return payload
+
 
 def _initialize_models():
     """Carrega o modelo de embeddings e o índice FAISS na memória."""
@@ -161,10 +226,45 @@ def query():
 
     debug_flag = bool(data.get("debug")) or (request.args.get("debug", "").lower() == "true")
 
-    res = {}
+    cache_payload = None
+    cache_key = None
+    cache_available = False
+    cached_response = None
+    res = None
     status = "ok"
-    try:
-        res = answer_question(question, embeddings_model, vectorstore, debug=debug_flag)
+    confidence_threshold = CONFIDENCE_MIN_QUERY
+
+    if not debug_flag:
+        cache_payload = _query_cache_payload(
+            question, k=5, fetch_k=20, confidence_min=confidence_threshold
+        )
+        cached_response, cache_key, cache_available = cache_fetch(QUERY_NAMESPACE, cache_payload)
+        if cache_available and cached_response is not None:
+            METRICS["cache_hits_total"] += 1
+            res = cached_response
+            status = "cache_hit"
+        else:
+            if cache_available:
+                METRICS["cache_misses_total"] += 1
+
+    if res is None:
+        try:
+            res = answer_question(
+                question,
+                embeddings_model,
+                vectorstore,
+                debug=debug_flag,
+                confidence_min=confidence_threshold,
+            )
+            status = "ok"
+        except Exception as e:
+            status = f"error:{type(e).__name__}"
+            METRICS["errors_internal"] += 1
+            res = {"error": f"Ocorreu uma falha interna: {e}"}
+
+    success = not status.startswith("error")
+
+    if success:
         METRICS["queries_total"] += 1
         if res.get("needs_clarification"):
             METRICS["queries_ambiguous"] += 1
@@ -172,16 +272,28 @@ def query():
             METRICS["queries_not_found"] += 1
         else:
             METRICS["queries_answered"] += 1
-    except Exception as e:
-        status = f"error:{type(e).__name__}"
-        METRICS["errors_internal"] += 1
-        res = {"error": f"Ocorreu uma falha interna: {e}"}
 
-    log = {"rid": rid, "status": status, "took_ms": int((time.time() - ts0) * 1000), "question": question[:400]}
+        if (
+            not debug_flag
+            and cache_available
+            and cached_response is None
+            and cache_payload is not None
+            and "error" not in res
+        ):
+            cache_store(QUERY_NAMESPACE, cache_payload, res, key=cache_key)
+
+    log = {
+        "rid": rid,
+        "status": status,
+        "took_ms": int((time.time() - ts0) * 1000),
+        "question": question[:400],
+        "confidence_threshold": confidence_threshold,
+    }
     print(json.dumps(log, ensure_ascii=False), flush=True)
 
     return jsonify(res)
 
+# --- NOVO ENDPOINT PARA O AGENTE ---
 # --- NOVO ENDPOINT PARA O AGENTE ---
 
 @app.post("/api/ask")
@@ -205,38 +317,96 @@ def agent_ask():
         METRICS["bad_request"] += 1
         return jsonify({"error": "O campo 'question' é obrigatório."}), 400
 
-    # Reconstrói o histórico de mensagens a partir do payload da requisição.
+    raw_messages = data.get("messages", [])
+    if not isinstance(raw_messages, list):
+        raw_messages = []
+
+    normalized_messages = _normalize_messages_for_cache(raw_messages)
+
     message_history = []
-    for msg in data.get("messages", []):
-        role = msg.get("role", "").lower()
+    for msg in raw_messages:
+        if not isinstance(msg, dict):
+            continue
+        role = str(msg.get("role", "")).lower()
         content = msg.get("content", "")
         if role == "user":
             message_history.append(HumanMessage(content=content))
-        elif role == "assistant" or role == "ia" or role == "ai":
+        elif role in ("assistant", "ia", "ai"):
             message_history.append(AIMessage(content=content))
 
-    res = {}
-    status = "ok"
-    try:
-        # Executa o agente, injetando os modelos e o histórico.
-        res = run_agent(question, message_history, embeddings_model, vectorstore)
+    confidence_threshold = CONFIDENCE_MIN_AGENT
+    cache_payload = _agent_cache_payload(
+        question, normalized_messages, confidence_min=confidence_threshold
+    )
+    cached_response, cache_key, cache_available = cache_fetch(AGENT_NAMESPACE, cache_payload)
+
+    served_from_cache = False
+    if cache_available and cached_response is not None:
+        METRICS["cache_hits_total"] += 1
+        res = cached_response
+        status = "cache_hit"
+        served_from_cache = True
+    else:
+        if cache_available:
+            METRICS["cache_misses_total"] += 1
+        try:
+            res = run_agent(
+                question,
+                message_history,
+                embeddings_model,
+                vectorstore,
+                confidence_min=confidence_threshold,
+            )
+            status = "ok"
+        except Exception as e:
+            status = f"error:{type(e).__name__}"
+            METRICS["errors_agent_internal"] += 1
+            res = {"error": f"Ocorreu uma falha interna no agente: {e}"}
+            import traceback
+            print(traceback.format_exc(), flush=True)
+
+    success = not status.startswith("error")
+    meta: Dict[str, Any] = res.get("meta") or {}
+
+    if success:
         METRICS["agent_queries_total"] += 1
         if res.get("action") == "PEDIR_INFO":
             METRICS["agent_clarification_needed"] += 1
         else:
             METRICS["agent_answered"] += 1
-    except Exception as e:
-        status = f"error:{type(e).__name__}"
-        METRICS["errors_agent_internal"] += 1
-        res = {"error": f"Ocorreu uma falha interna no agente: {e}"}
-        # Loga a exceção para debug
-        import traceback
-        print(traceback.format_exc(), flush=True)
 
-    log = {"rid": rid, "status": status, "took_ms": int((time.time() - ts0) * 1000), "question": question[:400]}
+        if not served_from_cache:
+            refine_attempts = int(meta.get("refine_attempts") or 0)
+            if refine_attempts:
+                METRICS["agent_refine_attempts_total"] += refine_attempts
+                if meta.get("refine_success"):
+                    METRICS["agent_refine_success_total"] += 1
+                else:
+                    METRICS["agent_refine_exhausted_total"] += 1
+
+        if cache_available and cached_response is None and "error" not in res:
+            cache_store(AGENT_NAMESPACE, cache_payload, res, key=cache_key)
+
+    log = {
+        "rid": rid,
+        "status": status,
+        "took_ms": int((time.time() - ts0) * 1000),
+        "question": question[:400],
+        "confidence_threshold": confidence_threshold,
+    }
+    if meta:
+        log["meta"] = {
+            "refine_attempts": int(meta.get("refine_attempts") or 0),
+            "confidence": meta.get("confidence"),
+            "refine_success": bool(meta.get("refine_success")),
+            "confidence_threshold": confidence_threshold,
+        }
     print(json.dumps(log, ensure_ascii=False), flush=True)
 
     return jsonify(res)
+
+
+
 
 
 if __name__ == "__main__":
@@ -244,3 +414,4 @@ if __name__ == "__main__":
     _initialize_models()
     # Inicia o servidor de desenvolvimento do Flask.
     app.run(host="0.0.0.0", port=5000)
+

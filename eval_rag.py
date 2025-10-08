@@ -215,6 +215,53 @@ def _compute_retrieval_metrics(results_dataset: Dataset) -> Dict[str, float]:
     }
 
 
+
+async def _compute_generation_metrics(
+    dataset: Dataset,
+    *,
+    ragas_evaluate=None,
+    ragas_metrics=None,
+    llm_factory=None,
+) -> Tuple[Dict[str, float], bool, str]:
+    """Retorna métricas do RAGAs junto com um sinalizador de disponibilidade e mensagem."""
+    if ragas_evaluate is None or ragas_metrics is None or llm_factory is None:
+        try:
+            from ragas import evaluate as ragas_evaluate_default  # type: ignore
+            from ragas.metrics import faithfulness, answer_relevancy  # type: ignore
+            from langchain_google_genai import ChatGoogleGenerativeAI  # type: ignore
+        except ImportError:
+            return {}, False, "WARN: Biblioteca ragas ou dependencias nao instaladas. Pulando metricas de geracao."
+        ragas_evaluate = ragas_evaluate or ragas_evaluate_default
+        ragas_metrics = ragas_metrics or [faithfulness, answer_relevancy]
+        llm_factory = llm_factory or (lambda: ChatGoogleGenerativeAI(model=EVAL_LLM_MODEL, temperature=0.0))
+
+    google_api_key = os.getenv("GOOGLE_API_KEY")
+    if not google_api_key:
+        return {}, False, "WARN: GOOGLE_API_KEY nao configurado. Pulando metricas de geracao (RAGAs)."
+
+    try:
+        ragas_llm = llm_factory()
+        ragas_result = await ragas_evaluate(
+            dataset=dataset,
+            metrics=ragas_metrics,
+            llm=ragas_llm,
+            raise_exceptions=False,
+        )
+    except Exception as exc:
+        return {}, False, f"ERROR: Falha ao executar avaliacao com RAGAs: {exc}"
+
+    try:
+        ragas_scores = ragas_result.scores.to_dict()  # type: ignore[attr-defined]
+    except AttributeError:
+        return {}, False, "ERROR: Resultado do RAGAs nao contem atributo 'scores'."
+
+    metrics = {
+        key: round(sum(values) / len(values), 4) if values else 0.0
+        for key, values in ragas_scores.items()
+    }
+    return metrics, True, ""
+
+
 async def evaluate_endpoint(dataset_records: List[Dict[str, Any]], url: str, label: str) -> Dict[str, Any]:
     print(f"\nINFO: Avaliando endpoint '{label}' -> {url}")
     results: List[Dict[str, Any]] = []
@@ -235,37 +282,9 @@ async def evaluate_endpoint(dataset_records: List[Dict[str, Any]], url: str, lab
     retrieval_metrics = _compute_retrieval_metrics(results_dataset)
 
     print("INFO: Calculando metricas de geracao (RAGAs)...")
-    avg_generation_metrics: Dict[str, float] = {}
-    ragas_available = True
-    try:
-        from ragas import evaluate  # type: ignore
-        from ragas.metrics import faithfulness, answer_relevancy  # type: ignore
-        from langchain_google_genai import ChatGoogleGenerativeAI  # type: ignore
-
-        google_api_key = os.getenv("GOOGLE_API_KEY")
-        if not google_api_key:
-            ragas_available = False
-            print("WARN: GOOGLE_API_KEY não configurado. Pulando métricas de geração (RAGAs).")
-        else:
-            ragas_llm = ChatGoogleGenerativeAI(model=EVAL_LLM_MODEL, temperature=0.0)
-            generation_metrics = [faithfulness, answer_relevancy]
-            ragas_result = await evaluate(
-                dataset=results_dataset,
-                metrics=generation_metrics,
-                llm=ragas_llm,
-                raise_exceptions=False,
-            )
-            ragas_scores = ragas_result.scores.to_dict()
-            avg_generation_metrics = {
-                key: round(sum(values) / len(values), 4) if values else 0.0
-                for key, values in ragas_scores.items()
-            }
-    except ImportError:
-        ragas_available = False
-        print("WARN: Biblioteca ragas ou dependencias nao instaladas. Pulando metricas de geracao.")
-    except Exception as exc:
-        ragas_available = False
-        print(f"ERROR: Falha ao executar avaliacao com RAGAs: {exc}")
+    avg_generation_metrics, ragas_available, ragas_message = await _compute_generation_metrics(results_dataset)
+    if ragas_message:
+        print(ragas_message)
 
     return {
         "endpoint": url,

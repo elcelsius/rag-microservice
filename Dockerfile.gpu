@@ -61,6 +61,7 @@ COPY telemetry.py ./
 COPY triage.py ./
 COPY etl_orchestrator.py ./
 COPY eval_rag.py ./
+COPY cache_backend.py ./
 COPY loaders ./loaders
 COPY prompts ./prompts
 COPY scripts ./scripts

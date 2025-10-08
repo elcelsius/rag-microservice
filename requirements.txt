@@ -68,6 +68,9 @@ google-generativeai>=0.7.2,<0.8
 
 einops>=0.7
 
+# --- Cache ---
+redis==5.0.7
+
 # --- Avaliação ---
 # Framework para avaliação de sistemas RAG.
 langchain-google-genai>=1.0.5,<2.0.0
@@ -80,5 +83,6 @@ pandas==2.2.2
 pytest==8.2.2
 # Utilitário para mocking em testes.
 pytest-mock==3.14.0
+fakeredis==2.23.3
 psycopg2-binary==2.9.9
 datasets==2.21.0
