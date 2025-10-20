@@ -1,7 +1,7 @@
 
 #!/usr/bin/env python
 # eval_rag.py
-# Script abrangente para avaliação de sistemas RAG, combinando métricas de recuperação e de geração.
+# Script abrangente para avaliação de sistemas RAG, combinando métricas de recuperação e de geração...
 
 from __future__ import annotations
 
