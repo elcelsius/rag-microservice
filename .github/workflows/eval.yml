@@ -1,0 +1,74 @@
+name: Evaluation
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "docs/melhorias.md"
+      - "evaluation_dataset.jsonl"
+      - "eval_rag.py"
+      - ".github/workflows/eval.yml"
+      - "requirements.txt"
+      - "api.py"
+      - "agent_workflow.py"
+
+jobs:
+  rag-eval:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Ensure env file
+        run: cp .env.example .env
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Start services
+        run: docker-compose -f docker-compose.cpu.yml up -d ai_projeto_api ai_web_ui
+
+      - name: Wait for API readiness
+        run: |
+          sudo apt-get update && sudo apt-get install -y jq >/dev/null
+          for i in {1..40}; do
+            if curl -fsS http://localhost:8080/api/healthz >/dev/null; then
+              curl -fsS http://localhost:8080/api/healthz | jq '.'
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "API não ficou pronta a tempo" >&2
+          docker-compose -f docker-compose.cpu.yml logs ai_projeto_api
+          exit 1
+
+      - name: Run RAG evaluation
+        run: |
+          python eval_rag.py \
+            --dataset evaluation_dataset.jsonl \
+            --agent-endpoint http://localhost:8080/api/agent/ask \
+            --legacy-endpoint http://localhost:8080/api/query \
+            --out reports \
+            --label ci
+
+      - name: Upload evaluation report
+        uses: actions/upload-artifact@v4
+        with:
+          name: rag-eval-report
+          path: reports/eval-report-*.json
+
+      - name: Docker logs (on failure)
+        if: failure()
+        run: docker-compose -f docker-compose.cpu.yml logs ai_projeto_api
+
+      - name: Shutdown services
+        if: always()
+        run: docker-compose -f docker-compose.cpu.yml down

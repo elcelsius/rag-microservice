@@ -71,6 +71,7 @@ jobs:
           GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
       - run: python tools/ci_assert_eval.py  # fail se métrica cair > tolerância
 ```
+- ✅ Workflow `.github/workflows/eval.yml` criado (roda `eval_rag.py`, faz upload do relatório). Configure `secrets.GOOGLE_API_KEY` no repositório antes da primeira execução.
 
 ---
 
@@ -216,7 +217,7 @@ scrape_configs:
 ## 8) Checklist de implementação
 
 - [ ] (RAGAs) Adicionar deps e chave; relatório com `ragas_available: true`.
-- [ ] (CI) Workflow mínimo executando `eval_rag.py` em subset.
+- [ ] (CI) Workflow mínimo executando `eval_rag.py` em subset. _(workflow disponível como `.github/workflows/eval.yml`; falta configurar o secret e validar o primeiro run)._
 - [ ] (Redis) Serviço no compose + `REDIS_URL` e `CACHE_TTL_SECONDS` no `.env`.
 - [ ] (Cache) Implementar no `/query` e `/agent/ask`; métricas de hit/miss.
 - [ ] (ETL) Invalidação/versão do cache ao fim do ETL.
