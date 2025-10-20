@@ -63,10 +63,10 @@ aliases:
   emília: ["emilia"]
   érico: ["erico"]
   fábio: ["fabio", "fabiu"]
-  flávia: ["flavia"]
-  isabelle: ["isabele"]
+  flávia: ["flavia", "falavia"]
+  isabelle: ["isabele", "isa"]
   joão: ["joao", "jão"]
-  josé: ["jose", "ze", "josa"]
+  josé: ["jose", "ze", "josa", "zé"]
   júlio: ["julio"]
   larissa: ["larisa", "lariça"]
   lídia: ["lidia"]
@@ -77,12 +77,12 @@ aliases:
   márcia: ["marcia"]
   márcio: ["marcio"]
   mário: ["mariu", "mario"]
-  natália: ["natalia"]
+  natália: ["natalia", "nathalia", "nathália"]
   neusa: ["neuza"]
   osvaldo: ["osvalldo", "oswaldo"]
-  patrícia: ["patricia"]
+  patrícia: ["patricia", "pat", "patriccia"]
   prescila: ["priscila"]
-  priscilia: ["priscillia"]
+  priscilia: ["priscillia", "pri"]
   rodolfo: ["hodolfo"]
   rogério: ["rogerio"]
   rubens: ["rúbens"]
@@ -100,8 +100,8 @@ aliases:
 # Siglas, abreviações e termos equivalentes. Essencial para o RAG.
 synonyms:
   # Cursos de Graduação e Pós-Graduação
-  bcc: "Bacharelado em Ciência da Computação"
-  bsi: "Bacharelado em Sistemas de Informação"
+  bcc: ["Bacharelado em Ciência da Computação", "ciencia da computacao"]
+  bsi: ["Bacharelado em Sistemas de Informação", "sistemas de informacao"]
   comp: "Computação"
   psico_curso: "Psicologia"
   pedagogia: "Licenciatura em Pedagogia"
@@ -114,7 +114,7 @@ synonyms:
   lic_fisica: "Licenciatura em Física"
 
   # Departamentos e Diretorias (Siglas)
-  dco: "Departamento de Computação"
+  departamento_computacao: ["Departamento de Computação", "dco", "comp", "computacao"]
   dta: "Diretoria Técnica Acadêmica"
   dtad: "Diretoria Técnica Administrativa"
   dti: "Diretoria Técnica de Informática"
@@ -156,6 +156,14 @@ synonyms:
   rh: "Seção Técnica de Gestão de Pessoas (STGP)"
   compras: "Seção Técnica de Materiais (STM)"
   financas: "Seção Técnica de Finanças (STF)"
+
+  # Termos relacionados a contato
+  contato: ["telefone", "ramal", "celular", "e-mail", "whatsapp"]
+
+  # Termos relacionados a e-mail
+  email: ["e-mail", "mail", "correio eletrônico", "e mail"]
+
+
 
 # Palavras-chave importantes que podem aparecer em buscas
 keywords:
