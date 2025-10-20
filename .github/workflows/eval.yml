@@ -72,3 +72,4 @@ jobs:
       - name: Shutdown services
         if: always()
         run: docker-compose -f docker-compose.cpu.yml down
+
