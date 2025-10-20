@@ -53,11 +53,14 @@ def test_auto_refine_happy_path(monkeypatch):
     )
 
     assert len(calls) == 2
-    assert calls[0][1] == agent_workflow.CONFIDENCE_MIN_AGENT
+    assert calls[0][1] == agent_workflow.AGENT_REFINE_CONFIDENCE
     assert result["action"] == "AUTO_RESOLVER"
     assert result["meta"]["refine_attempts"] == 1
     assert result["meta"]["refine_success"] is True
     assert "Biblioteca Central" in result["answer"]
+    assert result["meta"]["query_hash"]
+    assert len(result["meta"]["refine_prompt_hashes"]) >= 1
+    assert result["meta"]["max_refine_allowed"] == agent_workflow.AGENT_REFINE_MAX_ATTEMPTS
 
 
 def test_auto_refine_falls_back_to_pedir_info(monkeypatch):
@@ -95,10 +98,12 @@ def test_auto_refine_falls_back_to_pedir_info(monkeypatch):
     )
 
     assert len(calls) == 1
-    assert calls[0][1] == agent_workflow.CONFIDENCE_MIN_AGENT
+    assert calls[0][1] == agent_workflow.AGENT_REFINE_CONFIDENCE
     assert result["action"] == "PEDIR_INFO"
     assert result["meta"]["refine_attempts"] == 1
     assert result["meta"]["refine_success"] is False
+    assert result["meta"]["max_refine_allowed"] == 1
+    assert result["meta"]["query_hash"]
     assert "departamento" in result["answer"]
 
 
@@ -133,3 +138,39 @@ def test_run_agent_accepts_confidence_override(monkeypatch):
     assert captured['confidence_min'] == 0.87
     assert result['meta']['refine_attempts'] == 0
     assert result['meta']['refine_success'] is True
+    assert result['meta']['max_refine_allowed'] == agent_workflow.AGENT_REFINE_MAX_ATTEMPTS
+    assert result['meta']['query_hash']
+
+
+def test_max_refine_override_limits_attempts(monkeypatch):
+    calls = []
+
+    def fake_answer(question, *_args, **_kwargs):
+        calls.append(question)
+        return {
+            "answer": "Sem contexto",
+            "citacoes": [],
+            "context_found": False,
+            "confidence": 0.2,
+        }
+
+    def fake_call_llm(system_prompt, user_prompt, expect_json=False, **_kwargs):
+        if expect_json:
+            return "", {"decisao": "AUTO_RESOLVER"}
+        return "", None
+
+    monkeypatch.setattr(agent_workflow, "answer_question", fake_answer)
+    monkeypatch.setattr(agent_workflow, "call_llm", fake_call_llm)
+
+    result = agent_workflow.run_agent(
+        "Onde fica a biblioteca?",
+        messages=[],
+        embeddings_model=object(),
+        vectorstore=object(),
+        max_refine_attempts=0,
+    )
+
+    assert len(calls) == 1
+    assert result["meta"]["max_refine_allowed"] == 0
+    assert result["meta"]["refine_attempts"] == 0
+    assert result["action"] == "PEDIR_INFO"

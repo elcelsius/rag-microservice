@@ -3,6 +3,7 @@
 # Ele orquestra a triagem de perguntas, a recuperação de informações (RAG) e a geração de respostas.
 
 import os
+import hashlib
 from typing import TypedDict, Literal, List, Optional, Any, Dict
 
 from langchain_core.messages import SystemMessage, HumanMessage, BaseMessage
@@ -72,8 +73,10 @@ class AgentState(TypedDict, total=False):
     refine_history: List[str]
     refine_generated_new: bool
     confidence_override: Optional[float]
+    max_refine_allowed: int
+    query_hash: Optional[str]
+    refine_prompt_hashes: List[str]
     meta: Dict[str, Any]
-
 
 # --- NÓS DO GRAFO (REFATORADOS) ---
 
@@ -117,6 +120,7 @@ def node_auto_resolver(state: AgentState) -> AgentState:
     confidence_override = state.get("confidence_override")
     if confidence_override is None:
         confidence_override = CONFIDENCE_MIN_AGENT
+    max_refine_allowed = int(state.get("max_refine_allowed", AGENT_REFINE_MAX_ATTEMPTS))
 
     consulta_atual = state.get("consulta_atual")
 
@@ -146,6 +150,8 @@ def node_auto_resolver(state: AgentState) -> AgentState:
         else:
             consulta_atual = state["pergunta"]
 
+    query_hash = hashlib.sha256(consulta_atual.encode("utf-8")).hexdigest()[:12]
+
     # Chama a função RAG com os modelos injetados.
     resultado_rag = answer_question(
         consulta_atual,
@@ -167,6 +173,9 @@ def node_auto_resolver(state: AgentState) -> AgentState:
         "rag_result": resultado_rag,
         "refine_generated_new": False,
         "confidence_override": confidence_override,
+        "max_refine_allowed": max_refine_allowed,
+        "query_hash": query_hash,
+        "refine_prompt_hashes": state.get("refine_prompt_hashes", []),
     }
     if rag_success:
         next_state["acao_final"] = "AUTO_RESOLVER"
@@ -202,6 +211,8 @@ def node_auto_refine(state: AgentState) -> AgentState:
         f"\nDiagnóstico: {diagnostico.strip()}\n"
     )
 
+    prompt_hash = hashlib.sha256(user_prompt.encode('utf-8')).hexdigest()[:12]
+
     new_query, _ = call_llm(
         system_prompt="Você gera consultas curtas, precisas e orientadas à busca documental.",
         user_prompt=user_prompt,
@@ -213,6 +224,8 @@ def node_auto_refine(state: AgentState) -> AgentState:
 
     history = list(state.get("refine_history", []))
     history.append(consulta_final)
+    prompt_history = list(state.get("refine_prompt_hashes", []))
+    prompt_history.append(prompt_hash)
 
     return {
         "consulta_atual": consulta_final,
@@ -225,6 +238,9 @@ def node_auto_refine(state: AgentState) -> AgentState:
         "rag_confidence": 0.0,
         "rag_result": None,
         "confidence_override": state.get("confidence_override"),
+        "max_refine_allowed": int(state.get("max_refine_allowed", AGENT_REFINE_MAX_ATTEMPTS)),
+        "query_hash": state.get("query_hash"),
+        "refine_prompt_hashes": prompt_history,
     }
 
 def node_pedir_info(state: AgentState) -> AgentState:
@@ -284,13 +300,15 @@ def decidir_pos_auto_resolver(state: AgentState) -> Literal["ok", "refine", "inf
     rag_success = bool(state.get("rag_sucesso"))
     confidence = float(state.get("rag_confidence") or 0.0)
     attempts = int(state.get("refine_attempts", 0))
+    threshold = float(state.get("confidence_override") or AGENT_REFINE_CONFIDENCE)
+    allowed = int(state.get("max_refine_allowed", AGENT_REFINE_MAX_ATTEMPTS))
 
-    if rag_success and confidence >= AGENT_REFINE_CONFIDENCE:
+    if rag_success and confidence >= threshold:
         print("--- Agente: RAG bem-sucedido com confiança suficiente. ---")
         return "ok"
 
-    can_refine = AGENT_REFINE_ENABLED and attempts < AGENT_REFINE_MAX_ATTEMPTS
-    should_refine = (not rag_success) or (confidence < AGENT_REFINE_CONFIDENCE)
+    can_refine = AGENT_REFINE_ENABLED and attempts < allowed
+    should_refine = (not rag_success) or (confidence < threshold)
 
     if can_refine and should_refine:
         print("--- Agente: Tentará auto-refine antes de pedir mais informações. ---")
@@ -303,9 +321,10 @@ def decidir_pos_auto_resolver(state: AgentState) -> Literal["ok", "refine", "inf
 def decidir_pos_refine(state: AgentState) -> Literal["retry", "info"]:
     """Decide próximo passo após gerar uma reformulação."""
     attempts = int(state.get("refine_attempts", 0))
+    allowed = int(state.get("max_refine_allowed", AGENT_REFINE_MAX_ATTEMPTS))
     generated_new = bool(state.get("refine_generated_new"))
 
-    if attempts > AGENT_REFINE_MAX_ATTEMPTS:
+    if attempts > allowed:
         return "info"
     if not generated_new:
         print("--- Agente: Refinamento não gerou consulta nova. ---")
@@ -351,7 +370,7 @@ compiled_graph = create_agent_workflow()
 
 # --- FUNÇÃO DE INVOCAÇÃO PRINCIPAL ---
 
-def run_agent(pergunta: str, messages: List[BaseMessage], embeddings_model: Any, vectorstore: Any, *, confidence_min: float | None = None) -> dict:
+def run_agent(pergunta: str, messages: List[BaseMessage], embeddings_model: Any, vectorstore: Any, *, confidence_min: float | None = None, max_refine_attempts: int | None = None) -> dict:
     """
     Executa o fluxo de trabalho do agente para uma determinada pergunta e histórico.
 
@@ -360,10 +379,20 @@ def run_agent(pergunta: str, messages: List[BaseMessage], embeddings_model: Any,
         messages (List[BaseMessage]): O histórico da conversa.
         embeddings_model: O modelo de embeddings pré-carregado.
         vectorstore: O vectorstore FAISS pré-carregado.
+        confidence_min (float | None): Limiar de confiança opcional para esta invocação.
+        max_refine_attempts (int | None): Override opcional para o número máximo de refinamentos automáticos.
 
     Returns:
         dict: Um dicionário contendo a resposta, citações e ação final.
     """
+    confidence_override = confidence_min if confidence_min is not None else AGENT_REFINE_CONFIDENCE
+    try:
+        override_attempts = int(max_refine_attempts) if max_refine_attempts is not None else AGENT_REFINE_MAX_ATTEMPTS
+    except (TypeError, ValueError):
+        override_attempts = AGENT_REFINE_MAX_ATTEMPTS
+    override_attempts = max(0, override_attempts)
+    max_refine_allowed = min(override_attempts, AGENT_REFINE_MAX_ATTEMPTS)
+
     # Monta o estado inicial, injetando as dependências (modelos).
     initial_state = {
         "pergunta": pergunta,
@@ -372,8 +401,11 @@ def run_agent(pergunta: str, messages: List[BaseMessage], embeddings_model: Any,
         "vectorstore": vectorstore,
         "refine_attempts": 0,
         "refine_history": [],
+        "refine_prompt_hashes": [],
         "rag_confidence": 0.0,
-        "confidence_override": confidence_min,
+        "confidence_override": confidence_override,
+        "max_refine_allowed": max_refine_allowed,
+        "query_hash": None,
     }
     
     # Invoca o grafo com o estado inicial.
@@ -382,8 +414,12 @@ def run_agent(pergunta: str, messages: List[BaseMessage], embeddings_model: Any,
     meta = {
         "refine_attempts": final_state.get("refine_attempts", 0),
         "refine_history": final_state.get("refine_history", []),
+        "refine_prompt_hashes": final_state.get("refine_prompt_hashes", []),
         "refine_success": bool(final_state.get("rag_sucesso")),
         "confidence": float(final_state.get("rag_confidence") or 0.0),
+        "query_hash": final_state.get("query_hash"),
+        "max_refine_allowed": final_state.get("max_refine_allowed", AGENT_REFINE_MAX_ATTEMPTS),
+        "confidence_override": final_state.get("confidence_override", confidence_override),
     }
 
     action = final_state.get("acao_final")

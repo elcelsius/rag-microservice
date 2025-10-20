@@ -60,8 +60,8 @@ def test_agent_endpoint_uses_cache(monkeypatch, fake_cache):
     calls = []
 
     def fake_run_agent(question, messages, embeddings, store, **kwargs):
-        calls.append((question, kwargs.get("confidence_min")))
-        return {"answer": "Aqui", "citations": [], "action": "RESPONDER", "meta": {"refine_attempts": 0, "refine_success": True, "confidence": 0.8}}
+        calls.append((question, kwargs.get("confidence_min"), kwargs.get("max_refine_attempts")))
+        return {"answer": "Aqui", "citations": [], "action": "RESPONDER", "meta": {"refine_attempts": 0, "refine_success": True, "confidence": 0.8, "query_hash": "deadbeef", "refine_prompt_hashes": []}}
 
     monkeypatch.setattr(api, "run_agent", fake_run_agent)
 
@@ -75,6 +75,7 @@ def test_agent_endpoint_uses_cache(monkeypatch, fake_cache):
 
     assert len(calls) == 1
     assert calls[0][1] == api.CONFIDENCE_MIN_AGENT
+    assert calls[0][2] == api.AGENT_REFINE_MAX_ATTEMPTS
 
     metrics = api.METRICS
     assert metrics["cache_hits_total"] == 1

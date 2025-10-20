@@ -96,7 +96,7 @@ O primeiro build pode demorar alguns minutos. Após a inicialização, os seguin
 
 - **URL:** `POST /agent/ask`
 - **Alias:** `POST /api/ask` (exposto pelo proxy da UI em `http://localhost:8080`)
-- **Descrição:** Processa uma pergunta usando o fluxo completo do agente LangGraph. Suporta histórico de conversa.
+- **Descrição:** Processa uma pergunta usando o fluxo completo do agente LangGraph. Suporta histórico de conversa e aceita overrides via payload.
 - **Payload (JSON):**
   ```json
   {
@@ -104,9 +104,12 @@ O primeiro build pode demorar alguns minutos. Após a inicialização, os seguin
     "messages": [
       {"role": "user", "content": "Qual o contato do depto de bio?"},
       {"role": "assistant", "content": "Não encontrei um departamento com esse nome. Poderia especificar o nome completo?"}
-    ]
+    ],
+    "max_refine_attempts": 1
   }
   ```
+  - `max_refine_attempts` (opcional) limita quantas reformulações automáticas o agente pode fazer na chamada (padrão: `AGENT_REFINE_MAX_ATTEMPTS`).
+  - O corpo da resposta inclui `meta.query_hash`, `meta.refine_history`, `meta.refine_prompt_hashes` e `meta.confidence`, úteis para correlacionar com os registros e métricas.
 
 ### Endpoint Legado (RAG Direto)
 
@@ -125,16 +128,17 @@ Ambos os endpoints retornam o campo opcional `"needs_clarification"` quando o si
 - O ETL invalida o cache automaticamente ao final de rebuilds e atualizações incrementais, e a variável `INDEX_VERSION` faz parte da assinatura das chaves.
 - `/metrics` passou a expor `cache_hits_total` e `cache_misses_total`, permitindo acompanhar a eficiência do cache.
 - Para garantir o funcionamento, há testes dedicados: `python -m pytest tests/test_api_cache.py`.
+- Consulte `docs/METRICS.md` para exemplos de consulta e alertas Prometheus/Grafana.
 
 ---
 
 ## Auto-refine do Agente LangGraph
 
-- Quando o RAG entrega baixa confianca, o agente tenta ate duas reformulacoes automaticas antes de pedir mais contexto ao usuario.
-- As novas consultas sao geradas via LLM (`refine_query_prompt.txt`) e reutilizam o pipeline completo de RAG, registrando o historico em `meta.refine_history`.
-- Novas metricas expostas em `/metrics`: `agent_refine_attempts_total`, `agent_refine_success_total`, `agent_refine_exhausted_total` e `agent_low_confidence_total`.
-- Ajuste a estrategia com `AGENT_REFINE_ENABLED`, `AGENT_REFINE_MAX_ATTEMPTS`, `AGENT_REFINE_CONFIDENCE` e o limiar de confiança via `CONFIDENCE_MIN_AGENT`.
-- A suite `python -m pytest tests/test_agent_workflow.py` valida fluxos de sucesso e fallback.
+- Quando o RAG entrega baixa confiança, o agente tenta até duas reformulações automáticas antes de pedir mais contexto ao usuário.
+- As novas consultas são geradas via LLM (`refine_query_prompt.txt`) e reutilizam o pipeline completo de RAG, registrando o histórico (e hashes) em `meta.refine_history`/`meta.refine_prompt_hashes`.
+- Novas métricas expostas em `/metrics`: `agent_refine_attempts_total`, `agent_refine_success_total`, `agent_refine_exhausted_total` e `agent_low_confidence_total`.
+- Ajuste a estratégia com `AGENT_REFINE_ENABLED`, `AGENT_REFINE_MAX_ATTEMPTS`, `AGENT_REFINE_CONFIDENCE`, o limiar de confiança por rota (`CONFIDENCE_MIN_AGENT`) e, via payload, `max_refine_attempts`.
+- A suíte `python -m pytest tests/test_agent_workflow.py` valida fluxos de sucesso e fallback.
 
 ## Avaliação do Sistema
 

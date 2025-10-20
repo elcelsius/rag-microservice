@@ -23,7 +23,7 @@ from query_handler import (
     CONFIDENCE_MIN_QUERY,
     CONFIDENCE_MIN_AGENT,
 )
-from agent_workflow import run_agent
+from agent_workflow import run_agent, AGENT_REFINE_MAX_ATTEMPTS
 from text_normalizer import normalize_documents, normalize_text
 from cache_backend import (
     AGENT_NAMESPACE,
@@ -99,12 +99,13 @@ def _normalize_messages_for_cache(raw_messages: List[Dict[str, Any]]) -> List[Di
     return normalized
 
 
-def _agent_cache_payload(question: str, normalized_messages: List[Dict[str, str]], *, confidence_min: float) -> Dict[str, Any]:
+def _agent_cache_payload(question: str, normalized_messages: List[Dict[str, str]], *, confidence_min: float, max_refine_allowed: int) -> Dict[str, Any]:
     payload = {
         "question": _normalize_for_cache(question),
         "messages": normalized_messages,
         "agent_version": os.getenv("AGENT_CACHE_VERSION", "1"),
         "confidence_min_override": confidence_min,
+        "max_refine_allowed": max_refine_allowed,
     }
     payload.update(_base_cache_context())
     payload.update(pipeline_cache_fingerprint())
@@ -348,8 +349,19 @@ def agent_ask():
             message_history.append(AIMessage(content=content))
 
     confidence_threshold = CONFIDENCE_MIN_AGENT
+    max_refine_override = data.get("max_refine_attempts")
+    try:
+        max_refine_override_int = int(max_refine_override) if max_refine_override is not None else AGENT_REFINE_MAX_ATTEMPTS
+    except (TypeError, ValueError):
+        max_refine_override_int = AGENT_REFINE_MAX_ATTEMPTS
+    max_refine_override_int = max(0, max_refine_override_int)
+    max_refine_allowed = min(max_refine_override_int, AGENT_REFINE_MAX_ATTEMPTS)
+
     cache_payload = _agent_cache_payload(
-        question, normalized_messages, confidence_min=confidence_threshold
+        question,
+        normalized_messages,
+        confidence_min=confidence_threshold,
+        max_refine_allowed=max_refine_allowed,
     )
     cached_response, cache_key, cache_available = cache_fetch(AGENT_NAMESPACE, cache_payload)
 
@@ -370,6 +382,7 @@ def agent_ask():
                 embeddings_model,
                 vectorstore,
                 confidence_min=confidence_threshold,
+                max_refine_attempts=max_refine_override_int,
             )
             status = "ok"
         except Exception as e:
@@ -422,6 +435,9 @@ def agent_ask():
             "refine_attempts": int(meta.get("refine_attempts") or 0),
             "confidence": meta.get("confidence"),
             "refine_success": bool(meta.get("refine_success")),
+            "query_hash": meta.get("query_hash"),
+            "refine_prompt_hashes": meta.get("refine_prompt_hashes"),
+            "max_refine_allowed": meta.get("max_refine_allowed"),
             "confidence_threshold": confidence_threshold,
         }
     print(json.dumps(log, ensure_ascii=False), flush=True)

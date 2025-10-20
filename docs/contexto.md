@@ -16,10 +16,9 @@ O agente definido em `agent_workflow.py` decide se precisa de mais contexto ou s
 2. Executa o nó de triagem (`node_triagem`) com um prompt dedicado.
 3. Se faltarem dados, envia uma pergunta de esclarecimento via `node_pedir_info`.
 4. Caso contrário, segue para `node_auto_resolver`, que invoca o pipeline de RAG.
-5. Se o RAG falhar (ex.: baixa confiança, sem contexto), o agente volta a pedir informações ao usuário.
+5. Se o RAG falhar (ex.: baixa confiança, sem contexto), o agente tenta auto-refine (até `AGENT_REFINE_MAX_ATTEMPTS` ou override via payload `max_refine_attempts`) gerando novas consultas; se ainda assim não houver confiança, volta a pedir informações ao usuário.
 
-Este ciclo torna a interação mais robusta para perguntas vagas ou múltiplos turnos.
-
+Logs estruturados registram `query_hash` (sha-256 truncado da consulta), `refine_prompt_hashes` e `low_confidence` para facilitar correlação com o cache e com métricas (`agent_low_confidence_total`).
 ### 2.2. Pipeline de RAG (Retrieval-Augmented Generation)
 
 O pipeline em `query_handler.py` combina heurísticas lexicais e vetoriais. A sequência principal é:
@@ -63,7 +62,7 @@ Principais variáveis (veja `.env.example` para a lista completa):
 - **Embeddings/FAISS**: `EMBEDDINGS_MODEL`, `FAISS_STORE_DIR`, `FAISS_OUT_DIR` (ETL), `DATA_PATH_CONTAINER`.
 - **Reranker**: `RERANKER_PRESET` (`off|fast|balanced|full`), `RERANKER_ENABLED`, `RERANKER_NAME`, `RERANKER_CANDIDATES`, `RERANKER_TOP_K`, `RERANKER_MAX_LEN`, `RERANKER_DEVICE`, `RERANKER_TRUST_REMOTE_CODE`.
 - **Busca híbrida**: `HYBRID_ENABLED`, `LEXICAL_THRESHOLD`, `DEPT_BONUS`, `MAX_PER_SOURCE`, `ROUTE_FORCE` (diagnóstico).
-- **Multi-query e confiança**: `MQ_ENABLED`, `MQ_VARIANTS`, `CONFIDENCE_MIN`, `REQUIRE_CONTEXT`.
+- **Multi-query e confiança**: `MQ_ENABLED`, `MQ_VARIANTS`, `CONFIDENCE_MIN` (e overrides `CONFIDENCE_MIN_QUERY`/`CONFIDENCE_MIN_AGENT`), `REQUIRE_CONTEXT`.
 - **Observabilidade**: `REQUIRE_LLM_READY`, `DEBUG_LOG`, `DEBUG_PAYLOAD`, `LOG_DIR`.
 - **Banco de dados**: `POSTGRES_HOST`, `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_PORT`. Nos ambientes Docker Compose o host utilizado é `ai_postgres` e o serviço expõe a porta interna `5432` para os demais containers.
 

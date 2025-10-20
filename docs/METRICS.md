@@ -17,3 +17,23 @@ curl -s http://localhost:5000/metrics | jq '.counters.cache_hits_total'
 - Inspecionar `meta.confidence_threshold` e `low_confidence` nos logs para entender qual limiar estava ativo e se o alerta disparou.
 ```
 
+
+## Exemplo Prometheus
+```yaml
+scrape_configs:
+  - job_name: rag_api
+    metrics_path: /metrics
+    static_configs:
+      - targets: ['rag-api:5000']
+```
+
+## Alerta de baixa confiança (exemplo)
+```yaml
+- alert: RagLowConfidenceSpike
+  expr: increase(agent_low_confidence_total[5m]) > 3
+  for: 5m
+  labels:
+    severity: warning
+  annotations:
+    summary: "Muitas respostas do agente abaixo do limiar"
+```
