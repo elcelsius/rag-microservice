@@ -251,18 +251,18 @@ Esses passos funcionam como “gate” manual antes de criar novas imagens Docke
 
 ## 8) Checklist de implementação
 
-- [x] (RAGAs) Adicionar deps e chave; relatório com `ragas_available: true`.
-- [ ] (CI) Workflow mínimo executando `eval_rag.py` em subset. _(workflow disponível como `.github/workflows/eval.yml`; falta configurar o secret e validar o primeiro run)._
-- [x] (Redis) Serviço no compose + `REDIS_URL` e `CACHE_TTL_SECONDS` no `.env`.
-- [x] (Cache) Implementar no `/query` e `/agent/ask`; métricas de hit/miss.
-- [x] (ETL) Invalidação/versão do cache ao fim do ETL.
-- [x] (Agente) Nó `auto_refine` + telemetria; limite de iteração.
-- [ ] (RRF) Fusão de ranqueamento híbrido com `RRF_K`.
-- [ ] (Chunking) Experimentação com grade e, se possível, chunking semântico.
-- [ ] (Observabilidade) Exportar métricas para Prometheus; logs estruturados.
-- [ ] (Docs) Atualizar `README` com "Avaliação", "Cache" e "Observabilidade".
-- [x] (Smokes) Integrar `scripts/smoke_api.py` ao pipeline de CI (futuro).
-- [ ] (Manual) Executar checklist de validação local antes de publicar imagens/docs.
+- ✅ (RAGAs) Adicionar deps e chave; relatório com `ragas_available: true`.
+- ⬜ (CI) Workflow mínimo executando `eval_rag.py` em subset. _(workflow disponível como `.github/workflows/eval.yml`; falta configurar o secret e validar o primeiro run)._
+- ✅ (Redis) Serviço no compose + `REDIS_URL` e `CACHE_TTL_SECONDS` no `.env`.
+- ✅ (Cache) Implementar no `/query` e `/agent/ask`; métricas de hit/miss.
+- ✅ (ETL) Invalidação/versão do cache ao fim do ETL.
+- ✅ (Agente) Nó `auto_refine` + telemetria; limite de iteração.
+- ⬜ (RRF) Fusão de ranqueamento híbrido com `RRF_K`.
+- ⬜ (Chunking) Experimentação com grade e, se possível, chunking semântico.
+- ⬜ (Observabilidade) Exportar métricas para Prometheus; logs estruturados.
+- ⬜ (Docs) Atualizar `README` com "Avaliação", "Cache" e "Observabilidade".
+- ✅ (Smokes) Integrar `scripts/smoke_api.py` ao pipeline de CI (futuro).
+- ⬜ (Manual) Executar checklist de validação local antes de publicar imagens/docs.
 
 ---
 
