@@ -171,6 +171,35 @@ O projeto utiliza `pytest` para testes automatizados. Para executar a suíte de 
     pytest -v
     ```
 
+### Checklist de validação local
+Siga os passos abaixo antes de publicar novas imagens ou documentação (exemplo em PowerShell/Windows):
+
+```bash
+# Ambiente e dependências
+python -m venv .venv
+.\.venv\Scripts\activate
+pip install -r requirements.txt
+
+# Avaliação RAGAs (gera relatório em reports/)
+set GOOGLE_API_KEY=SEU_TOKEN
+python eval_rag.py ^
+  --dataset evaluation_dataset.jsonl ^
+  --agent-endpoint http://localhost:5000/agent/ask ^
+  --legacy-endpoint http://localhost:5000/query ^
+  --out reports/
+
+# Smoke tests (API direta e via proxy)
+python scripts/smoke_api.py http://localhost:5000/api
+python scripts/smoke_api.py http://localhost:8080/api
+
+# Cenário funcional (telefone / contato)
+curl -fsS http://localhost:8080/agent/ask ^
+  -H "Content-Type: application/json" ^
+  -d "{\"question\":\"Qual o telefone da Andreia da computacao?\",\"messages\":[],\"debug\":true}" ^
+  | python -m json.tool
+```
+> A resposta deve vir pela rota `contact_fallback`, exibindo telefone e e-mail específicos.
+
 ---
 
 ## Estrutura do Projeto

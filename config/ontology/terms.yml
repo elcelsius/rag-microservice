@@ -102,66 +102,111 @@ synonyms:
   # Cursos de Graduação e Pós-Graduação
   bcc: ["Bacharelado em Ciência da Computação", "ciencia da computacao"]
   bsi: ["Bacharelado em Sistemas de Informação", "sistemas de informacao"]
-  comp: "Computação"
-  psico_curso: "Psicologia"
-  pedagogia: "Licenciatura em Pedagogia"
-  mat: "Matemática"
-  meteorologia: "Bacharelado em Meteorologia"
-  fisica_materiais: "Bacharelado em Física dos Materiais"
-  fis: "Física"
-  pos_graduacao: "Pós-Graduação"
-  lic_psicologia: "Licenciatura em Psicologia e Formação de Psicólogos"
-  lic_fisica: "Licenciatura em Física"
+  comp: ["Computação", "computacao"]
+  psico_curso: ["Psicologia"]
+  pedagogia: ["Licenciatura em Pedagogia"]
+  mat: ["Matemática", "matematica"]
+  meteorologia: ["Bacharelado em Meteorologia"]
+  fisica_materiais: ["Bacharelado em Física dos Materiais"]
+  fis: ["Física", "fisica"]
+  pos_graduacao: ["Pós-Graduação", "pos graduacao"]
+  lic_psicologia: ["Licenciatura em Psicologia e Formação de Psicólogos"]
+  lic_fisica: ["Licenciatura em Física"]
 
   # Departamentos e Diretorias (Siglas)
-  departamento_computacao: ["Departamento de Computação", "dco", "comp", "computacao"]
-  dta: "Diretoria Técnica Acadêmica"
-  dtad: "Diretoria Técnica Administrativa"
-  dti: "Diretoria Técnica de Informática"
-  dpsi: "Departamento de Psicologia"
-  def: "Departamento de Educação Física"
-  dfm: "Departamento de Física e Meteorologia"
-  psico: "Departamento de Psicologia"
+  dco: ["Departamento de Computação", "departamento computação", "departamento computacao", "dco", "comp", "computacao"]
+  dta: ["Diretoria Técnica Acadêmica"]
+  dtad: ["Diretoria Técnica Administrativa"]
+  dti: ["Diretoria Técnica de Informática"]
+  dpsi: ["Departamento de Psicologia"]
+  def: ["Departamento de Educação Física"]
+  dfm: ["Departamento de Física e Meteorologia"]
+  psico: ["Departamento de Psicologia"]
 
   # Seções (Siglas)
-  staepe: "Seção Técnica de Apoio ao Ensino, Pesquisa e Extensão"
-  stg: "Seção Técnica de Graduação"
-  stpg: "Seção Técnica de Pós-Graduação"
-  sta: "Seção Técnica Acadêmica"
-  saad: "Seção de Apoio Administrativo"
-  stf: "Seção Técnica de Finanças"
-  stm: "Seção Técnica de Materiais"
-  stgp: "Seção Técnica de Gestão de Pessoas"
+  staepe: ["Seção Técnica de Apoio ao Ensino, Pesquisa e Extensão"]
+  stg: ["Seção Técnica de Graduação"]
+  stpg: ["Seção Técnica de Pós-Graduação", "pos graduacao"]
+  sta: ["Seção Técnica Acadêmica"]
+  saad: ["Seção de Apoio Administrativo"]
+  stf: ["Seção Técnica de Finanças"]
+  stm: ["Seção Técnica de Materiais"]
+  stgp: ["Seção Técnica de Gestão de Pessoas", "gestão de pessoas"]
 
   # Laboratórios e Locais
-  ldc: "Laboratório Didático Computacional"
-  lepec: "Laboratório de Ensino, Pesquisa e Extensão em Computação"
-  labsicc: "Laboratório Didático dos Cursos de Bacharelado em Sistemas de Informação e Bacharelado em Ciência da Computação"
+  ldc: ["Laboratório Didático Computacional", "laboratorio didatico computacional"]
+  lepec: ["Laboratório de Ensino, Pesquisa e Extensão em Computação"]
+  labsicc: ["Laboratório Didático dos Cursos de Bacharelado em Sistemas de Informação e Bacharelado em Ciência da Computação"]
 
   # Pró-Reitorias e Coordenadorias
-  cope: "Coordenadoria de Permanência Estudantil (COPE)"
-  proex: "Pró-Reitoria de Extensão Universitária (PROEX)"
-  prograd: "Pró-Reitoria de Graduação (PROGRAD)"
-  prope: "Pró-Reitoria de Pesquisa (PROPE)"
+  cope: ["Coordenadoria de Permanência Estudantil", "COPE"]
+  proex: ["Pró-Reitoria de Extensão Universitária"]
+  prograd: ["Pró-Reitoria de Graduação"]
+  prope: ["Pró-Reitoria de Pesquisa"]
 
   # Outras Unidades
-  faac: "Faculdade de Arquitetura, Artes e Comunicação (FAAC)"
-  feb: "Faculdade de Engenharia de Bauru (FEB)"
-  fundeb: "FUNDEB"
-  ipmet: "IPMET"
+  faac: ["Faculdade de Arquitetura, Artes e Comunicação", "FAAC"]
+  feb: ["Faculdade de Engenharia de Bauru", "FEB"]
+  fundeb: ["FUNDEB"]
+  ipmet: ["IPMET"]
 
   # Serviços e Sistemas
-  impressao: "Serviço de Impressão"
-  voip: "Telefonia VoIP"
-  rh: "Seção Técnica de Gestão de Pessoas (STGP)"
-  compras: "Seção Técnica de Materiais (STM)"
-  financas: "Seção Técnica de Finanças (STF)"
+  impressao: ["Serviço de Impressão", "servico de impressao"]
+  voip: ["Telefonia VoIP"]
+  rh: ["Seção Técnica de Gestão de Pessoas", "STGP"]
+  compras: ["Seção Técnica de Materiais", "STM"]
+  financas: ["Seção Técnica de Finanças", "STF"]
+
+  # Pessoas e docentes
+  andreia:
+    - "Andreia Carla Gonçalves Vianna"
+    - "Andreia Vianna"
+    - "professora Andreia"
+  andrea:
+    - "Andrea Carla Gonçalves Vianna"
+    - "Andrea Vianna"
+  simone:
+    - "Simone das Graças Domingues Prado"
+    - "Simone Domingues Prado"
+    - "Simone Prado"
+  vianna:
+    - "Vianna"
+    - "Gonçalves Vianna"
+  prado:
+    - "Prado"
+    - "Domingues Prado"
 
   # Termos relacionados a contato
-  contato: ["telefone", "ramal", "celular", "e-mail", "whatsapp"]
+  contato:
+    - "contato"
+    - "contatos"
+    - "dados de contato"
+    - "informacoes de contato"
+    - "ponto de contato"
+  telefone:
+    - "telefone"
+    - "tel"
+    - "telefone fixo"
+    - "numero de telefone"
+    - "telefone direto"
+  ramal:
+    - "ramal"
+    - "ramais"
+  celular:
+    - "celular"
+    - "numero de celular"
+    - "telefone celular"
+  whatsapp:
+    - "whatsapp"
+    - "whats"
 
   # Termos relacionados a e-mail
-  email: ["e-mail", "mail", "correio eletrônico", "e mail"]
+  email:
+    - "e-mail"
+    - "email"
+    - "mail"
+    - "correio eletronico"
+    - "e mail"
 
 
 
@@ -204,3 +249,45 @@ boosts:
     educacaofisica: 1.05
     matematica: 1.15
     quimica: 1.0
+
+# Expansões personalizadas de multi-query por termo
+mq_expansions:
+  reserva:
+    - "reserva anfiteatro stpg"
+    - "email stpg reserva anfiteatro"
+    - "solicitar sala pos graduacao stpg"
+  anfiteatro:
+    - "anfiteatro pos graduacao stpg"
+    - "reserva sala anfiteatro faculdade de ciencias"
+    - "agendar anfiteatro fc bauru"
+  impressao:
+    - "impressao ldc passo a passo"
+    - "comprar cotas impressao ldc"
+    - "envio arquivo impressao laboratorio didatico computacional"
+  cota:
+    - "cotas impressao pagamento pix"
+    - "valor impressao frente verso ldc"
+    - "tabela preco impressao faculdade ciencias"
+  ldc:
+    - "laboratorio didatico computacional agenda"
+    - "agendar uso ldc lepec"
+    - "horario funcionamento lepec"
+  contato:
+    - "telefone secretaria faculdade ciencias"
+    - "email secretaria apoio administrativo"
+    - "ramal suporte ldc"
+  andreia:
+    - "andreia carla goncalves vianna telefone"
+    - "telefone 3103 9508 andreia vianna"
+    - "andreia vianna 3103-9508 telefone"
+    - "contato andreia vianna departamento de computacao"
+  andrea:
+    - "andrea carla goncalves vianna telefone"
+    - "telefone 3103 9508 andrea vianna"
+    - "andrea vianna 3103-9508 telefone"
+    - "contato andrea vianna departamento de computacao"
+  simone:
+    - "simone das gracas domingues prado telefone"
+    - "telefone 3103 9514 simone prado"
+    - "simone prado 3103-9514 telefone"
+    - "contato simone prado departamento de computacao"

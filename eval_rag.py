@@ -13,6 +13,7 @@ import os
 import re
 import unicodedata
 import sys
+import inspect
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Tuple, Any
@@ -24,7 +25,7 @@ from datasets import Dataset
 # --- Configuração da Avaliação ---
 API_AGENT_DEFAULT = os.getenv("API_URL", "http://localhost:5000/agent/ask")
 API_QUERY_DEFAULT = os.getenv("LEGACY_API_URL", "http://localhost:5000/query")
-EVAL_LLM_MODEL = os.getenv("GOOGLE_MODEL", "gemini-1.5-flash-latest")
+EVAL_LLM_MODEL = os.getenv("GOOGLE_MODEL", "models/gemini-2.5-flash-lite")
 DEFAULT_DATASET = Path("evaluation_dataset.jsonl")
 
 if hasattr(sys.stdout, "reconfigure"):
@@ -227,12 +228,12 @@ async def _compute_generation_metrics(
     if ragas_evaluate is None or ragas_metrics is None or llm_factory is None:
         try:
             from ragas import evaluate as ragas_evaluate_default  # type: ignore
-            from ragas.metrics import faithfulness, answer_relevancy  # type: ignore
+            from ragas.metrics import faithfulness, context_precision  # type: ignore
             from langchain_google_genai import ChatGoogleGenerativeAI  # type: ignore
         except ImportError:
             return {}, False, "WARN: Biblioteca ragas ou dependencias nao instaladas. Pulando metricas de geracao."
         ragas_evaluate = ragas_evaluate or ragas_evaluate_default
-        ragas_metrics = ragas_metrics or [faithfulness, answer_relevancy]
+        ragas_metrics = ragas_metrics or [faithfulness, context_precision]
         llm_factory = llm_factory or (lambda: ChatGoogleGenerativeAI(model=EVAL_LLM_MODEL, temperature=0.0))
 
     google_api_key = os.getenv("GOOGLE_API_KEY")
@@ -241,25 +242,75 @@ async def _compute_generation_metrics(
 
     try:
         ragas_llm = llm_factory()
-        ragas_result = await ragas_evaluate(
+        ragas_result = ragas_evaluate(
             dataset=dataset,
             metrics=ragas_metrics,
             llm=ragas_llm,
             raise_exceptions=False,
         )
+        if inspect.isawaitable(ragas_result):
+            ragas_result = await ragas_result
     except Exception as exc:
         return {}, False, f"ERROR: Falha ao executar avaliacao com RAGAs: {exc}"
 
+    ragas_scores_obj = getattr(ragas_result, "scores", None)
+    df = None
     try:
-        ragas_scores = ragas_result.scores.to_dict()  # type: ignore[attr-defined]
-    except AttributeError:
-        return {}, False, "ERROR: Resultado do RAGAs nao contem atributo 'scores'."
+        df = ragas_result.to_pandas()
+    except Exception:
+        df = None
 
-    metrics = {
-        key: round(sum(values) / len(values), 4) if values else 0.0
-        for key, values in ragas_scores.items()
-    }
+    metrics: Dict[str, float] = {}
+    if ragas_scores_obj is not None:
+        try:
+            ragas_scores = ragas_scores_obj.to_dict()  # type: ignore[attr-defined]
+            metrics.update({
+                key: round(sum(values) / len(values), 4) if values else 0.0
+                for key, values in ragas_scores.items()
+            })
+        except AttributeError:
+            pass
+
+    if not metrics and df is not None:
+        for metric in (ragas_metrics or []):
+            metric_name = getattr(metric, "name", None) or metric.__class__.__name__
+            if metric_name in df.columns:
+                try:
+                    series = df[metric_name].astype(float)
+                    metrics[metric_name] = round(float(series.mean()), 4)
+                except Exception:
+                    continue
+
+    if not metrics:
+        return {}, False, "WARN: RAGAs nao retornou metricas utilizaveis (verifique timeouts ou limites)."
     return metrics, True, ""
+
+
+
+def _prepare_dataset_for_ragas(dataset: Dataset) -> Dataset:
+    """Converte campos para o formato esperado pelo RAGAs (reference como string, contexts como lista de strings)."""
+    def _transform(example: Dict[str, Any]) -> Dict[str, Any]:
+        ground_raw = example.get("ground_truth")
+        if isinstance(ground_raw, list):
+            reference = "\n".join(str(v).strip() for v in ground_raw if str(v).strip())
+        elif ground_raw is None:
+            reference = ""
+        else:
+            reference = str(ground_raw).strip()
+
+        contexts_raw = example.get("contexts") or []
+        if isinstance(contexts_raw, list):
+            contexts = [str(v) for v in contexts_raw if str(v)]
+        else:
+            contexts = [str(contexts_raw)]
+
+        example["reference"] = reference
+        example["ground_truth"] = [reference] if reference else []
+        example["contexts"] = contexts
+        example["answer"] = str(example.get("answer", ""))
+        return example
+
+    return dataset.map(_transform)
 
 
 async def evaluate_endpoint(dataset_records: List[Dict[str, Any]], url: str, label: str) -> Dict[str, Any]:
@@ -282,7 +333,8 @@ async def evaluate_endpoint(dataset_records: List[Dict[str, Any]], url: str, lab
     retrieval_metrics = _compute_retrieval_metrics(results_dataset)
 
     print("INFO: Calculando metricas de geracao (RAGAs)...")
-    avg_generation_metrics, ragas_available, ragas_message = await _compute_generation_metrics(results_dataset)
+    ragas_dataset = _prepare_dataset_for_ragas(results_dataset)
+    avg_generation_metrics, ragas_available, ragas_message = await _compute_generation_metrics(ragas_dataset)
     if ragas_message:
         print(ragas_message)
 

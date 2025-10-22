@@ -212,6 +212,41 @@ scrape_configs:
 - **CI gate**: reprova PR se `faithfulness` cair > X% no golden set.
 - **Testes**: manter `pytest -k api` e adicionar smoke do `/agent/ask`.
 
+### 7.1 Validação local (workflow adotado)
+Como o projeto é mantido localmente, seguimos um “gate” manual antes de publicar novas alterações:
+
+1. **Preparar ambiente**  
+   ```bash
+   python -m venv .venv
+   .\.venv\Scripts\activate  # PowerShell / Windows
+   pip install -r requirements.txt
+   ```
+2. **Rodar avaliação RAGAs** (gera relatório em `reports/`)  
+   ```bash
+   set GOOGLE_API_KEY=SEU_TOKEN
+   python eval_rag.py ^
+       --dataset evaluation_dataset.jsonl ^
+       --agent-endpoint http://localhost:5000/agent/ask ^
+       --legacy-endpoint http://localhost:5000/query ^
+       --out reports/
+   ```
+   > O relatório deve sair com `ragas_available: true`. Guarde o JSON na pasta `reports/`.
+3. **Executar smoke tests**  
+   ```bash
+   python scripts/smoke_api.py http://localhost:8080/api
+   python scripts/smoke_api.py http://localhost:5000/api
+   ```
+4. **Checagem funcional de contatos**  
+   ```bash
+   curl -fsS http://localhost:8080/agent/ask ^
+     -H "Content-Type: application/json" ^
+     -d "{\"question\":\"Qual o telefone da Andreia da computacao?\",\"messages\":[],\"debug\":true}" ^
+     | python -m json.tool
+   ```
+   > A resposta deve vir pela rota `contact_fallback`, exibindo o telefone específico.
+
+Esses passos funcionam como “gate” manual antes de criar novas imagens Docker ou publicar documentação.
+
 ---
 
 ## 8) Checklist de implementação
@@ -227,6 +262,7 @@ scrape_configs:
 - [ ] (Observabilidade) Exportar métricas para Prometheus; logs estruturados.
 - [ ] (Docs) Atualizar `README` com "Avaliação", "Cache" e "Observabilidade".
 - [x] (Smokes) Integrar `scripts/smoke_api.py` ao pipeline de CI (futuro).
+- [ ] (Manual) Executar checklist de validação local antes de publicar imagens/docs.
 
 ---
 

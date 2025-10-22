@@ -331,6 +331,7 @@ def agent_ask():
         METRICS["bad_request"] += 1
         return jsonify({"error": "O campo 'question' é obrigatório."}), 400
 
+    debug_flag = bool(data.get("debug")) or (request.args.get("debug", "").lower() == "true")
     raw_messages = data.get("messages", [])
     if not isinstance(raw_messages, list):
         raw_messages = []
@@ -357,13 +358,19 @@ def agent_ask():
     max_refine_override_int = max(0, max_refine_override_int)
     max_refine_allowed = min(max_refine_override_int, AGENT_REFINE_MAX_ATTEMPTS)
 
-    cache_payload = _agent_cache_payload(
-        question,
-        normalized_messages,
-        confidence_min=confidence_threshold,
-        max_refine_allowed=max_refine_allowed,
-    )
-    cached_response, cache_key, cache_available = cache_fetch(AGENT_NAMESPACE, cache_payload)
+    cache_payload = None
+    cache_key = None
+    cache_available = False
+    cached_response = None
+
+    if not debug_flag:
+        cache_payload = _agent_cache_payload(
+            question,
+            normalized_messages,
+            confidence_min=confidence_threshold,
+            max_refine_allowed=max_refine_allowed,
+        )
+        cached_response, cache_key, cache_available = cache_fetch(AGENT_NAMESPACE, cache_payload)
 
     served_from_cache = False
     low_confidence = False
@@ -383,6 +390,7 @@ def agent_ask():
                 vectorstore,
                 confidence_min=confidence_threshold,
                 max_refine_attempts=max_refine_override_int,
+                debug=debug_flag,
             )
             status = "ok"
         except Exception as e:
@@ -416,7 +424,12 @@ def agent_ask():
         if meta_confidence is not None and meta_confidence < confidence_threshold:
             low_confidence = True
 
-        if cache_available and cached_response is None and "error" not in res:
+        if (
+            not debug_flag
+            and cache_available
+            and cached_response is None
+            and "error" not in res
+        ):
             cache_store(AGENT_NAMESPACE, cache_payload, res, key=cache_key)
 
         if low_confidence:

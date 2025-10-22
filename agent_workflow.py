@@ -77,6 +77,7 @@ class AgentState(TypedDict, total=False):
     query_hash: Optional[str]
     refine_prompt_hashes: List[str]
     meta: Dict[str, Any]
+    debug_mode: bool
 
 # --- NÓS DO GRAFO (REFATORADOS) ---
 
@@ -153,11 +154,12 @@ def node_auto_resolver(state: AgentState) -> AgentState:
     query_hash = hashlib.sha256(consulta_atual.encode("utf-8")).hexdigest()[:12]
 
     # Chama a função RAG com os modelos injetados.
+    debug_mode = bool(state.get("debug_mode"))
     resultado_rag = answer_question(
         consulta_atual,
         embeddings_model,
         vectorstore,
-        debug=False,
+        debug=debug_mode,
         confidence_min=confidence_override,
     )
 
@@ -176,6 +178,7 @@ def node_auto_resolver(state: AgentState) -> AgentState:
         "max_refine_allowed": max_refine_allowed,
         "query_hash": query_hash,
         "refine_prompt_hashes": state.get("refine_prompt_hashes", []),
+        "debug_mode": debug_mode,
     }
     if rag_success:
         next_state["acao_final"] = "AUTO_RESOLVER"
@@ -370,7 +373,7 @@ compiled_graph = create_agent_workflow()
 
 # --- FUNÇÃO DE INVOCAÇÃO PRINCIPAL ---
 
-def run_agent(pergunta: str, messages: List[BaseMessage], embeddings_model: Any, vectorstore: Any, *, confidence_min: float | None = None, max_refine_attempts: int | None = None) -> dict:
+def run_agent(pergunta: str, messages: List[BaseMessage], embeddings_model: Any, vectorstore: Any, *, confidence_min: float | None = None, max_refine_attempts: int | None = None, debug: bool = False) -> dict:
     """
     Executa o fluxo de trabalho do agente para uma determinada pergunta e histórico.
 
@@ -406,6 +409,7 @@ def run_agent(pergunta: str, messages: List[BaseMessage], embeddings_model: Any,
         "confidence_override": confidence_override,
         "max_refine_allowed": max_refine_allowed,
         "query_hash": None,
+        "debug_mode": bool(debug),
     }
     
     # Invoca o grafo com o estado inicial.
@@ -427,9 +431,14 @@ def run_agent(pergunta: str, messages: List[BaseMessage], embeddings_model: Any,
         action = "AUTO_RESOLVER" if final_state.get("rag_sucesso") else "UNKNOWN"
 
     # Retorna a saída formatada.
-    return {
+    result: Dict[str, Any] = {
         "answer": final_state.get("resposta"),
         "citations": final_state.get("citacoes", []),
         "action": action,
         "meta": meta,
     }
+    if debug:
+        rag_result = final_state.get("rag_result")
+        if isinstance(rag_result, dict) and rag_result.get("debug") is not None:
+            result["debug"] = rag_result.get("debug")
+    return result

@@ -274,10 +274,17 @@ def load_terms(path: str = TERMS_PATH):
         data.setdefault("aliases", {})
         data.setdefault("synonyms", {})
         data.setdefault("boosts", {})
+        data.setdefault("mq_expansions", {})
         return data
     except FileNotFoundError:
-        print(f"[DICT] Arquivo não encontrado: {path} — usando defaults vazios.")
-        return {"departments": {}, "aliases": {}, "synonyms": {}, "boosts": {}}
+        print(f"[DICT] Arquivo não encontrado: {path} - usando defaults vazios.")
+        return {
+            "departments": {},
+            "aliases": {},
+            "synonyms": {},
+            "boosts": {},
+            "mq_expansions": {},
+        }
 
 
 # Carrega os termos na inicialização do módulo.
@@ -286,39 +293,235 @@ DEPARTMENTS = TERMS["departments"]  # dict slug -> label canônica
 ALIASES = TERMS["aliases"]  # dict termo -> [variações]
 SYNONYMS = TERMS["synonyms"]  # dict sigla -> [expansões]
 CUSTOM_MQ_EXPANSIONS = {
-    'reserva': [
-        'reserva anfiteatro stpg',
-        'email stpg reserva anfiteatro',
-        'solicitar sala pos graduacao stpg'
-    ],
-    'anfiteatro': [
-        'anfiteatro pos graduacao stpg',
-        'reserva sala anfiteatro faculdade de ciencias',
-        'agendar anfiteatro fc bauru'
-    ],
-    'impressao': [
-        'impressao ldc passo a passo',
-        'comprar cotas impressao ldc',
-        'envio arquivo impressao laboratorio didatico computacional'
-    ],
-    'cota': [
-        'cotas impressao pagamento pix',
-        'valor impressao frente verso ldc',
-        'tabela preco impressao faculdade ciencias'
-    ],
-    'ldc': [
-        'laboratorio didatico computacional agenda',
-        'agendar uso ldc lepec',
-        'horario funcionamento lepec'
-    ],
-    'contato': [
-        'telefone secretaria faculdade ciencias',
-        'email secretaria apoio administrativo',
-        'ramal suporte ldc'
-    ]
+    key: [str(v).strip() for v in (values or []) if str(v).strip()]
+    for key, values in (TERMS.get("mq_expansions") or {}).items()
 }
 BOOSTS = TERMS["boosts"]  # dict de boosts opcionais
-print(f"[DICT] departamentos={len(DEPARTMENTS)} aliases={len(ALIASES)} synonyms={len(SYNONYMS)}")
+CONTACT_INDEX_READY = False
+PERSON_CONTACTS: Dict[str, Dict[str, Any]] = {}
+CONTACT_ALIAS_MAP: Dict[str, str] = {}
+
+def _strip_accents_lower_safe(text: str) -> str:
+    if not text:
+        return ""
+    nfkd = unicodedata.normalize("NFD", text)
+    return "".join(ch for ch in nfkd if not unicodedata.combining(ch)).lower()
+
+def _build_alias_lookup() -> Dict[str, str]:
+    lookup: Dict[str, str] = {}
+    for base, alias_list in ALIASES.items():
+        canonical = _strip_accents_lower_safe(base)
+        lookup[canonical] = canonical
+        for alias in alias_list or []:
+            lookup[_strip_accents_lower_safe(alias)] = canonical
+    return lookup
+
+ALIAS_LOOKUP = _build_alias_lookup()
+DEPT_DISPLAY_TO_SLUG = {
+    _strip_accents_lower_safe(name): slug
+    for slug, name in DEPARTMENTS.items()
+}
+print(
+    f"[DICT] departamentos={len(DEPARTMENTS)} aliases={len(ALIASES)} "
+    f"synonyms={len(SYNONYMS)} mq_expansions={len(CUSTOM_MQ_EXPANSIONS)}"
+)
+
+_BLOCK_SPLIT_RE = re.compile(r"\n\s*\n+")
+_TITLE_PREFIX_RE = re.compile(r"^(prof(?:essor)?a?|prof\.?|profa\.?|profa|professora|dr\.?|dra\.?|doutor(?:a)?)\s+", re.IGNORECASE)
+_GENERIC_NAME_TOKENS = {
+    "bacharelado",
+    "departamento",
+    "secretaria",
+    "curso",
+    "corpo",
+    "docente",
+    "telefones",
+    "contato",
+    "impressao",
+    "reserva",
+    "servico",
+    "faculdade",
+}
+
+def _split_blocks(text: str) -> List[str]:
+    return [blk for blk in _BLOCK_SPLIT_RE.split(text) if blk and blk.strip()]
+
+def _clean_person_name(raw: str) -> str:
+    if not raw:
+        return ""
+    name = raw.strip(":- \u2013\u2014")
+    name = _TITLE_PREFIX_RE.sub("", name)
+    name = re.sub(r"\s{2,}", " ", name)
+    return name.strip()
+
+def _unique_citations(citations: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    seen = set()
+    unique: List[Dict[str, Any]] = []
+    for cit in citations:
+        if not isinstance(cit, dict):
+            continue
+        key = (cit.get("source"), cit.get("chunk"), cit.get("preview"))
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(cit)
+    return unique
+
+def _dept_hint_from_question(question: str) -> Optional[str]:
+    q_norm = _strip_accents_lower(question)
+    if any(term in q_norm for term in ("computacao", "computação", "comp.", "bcc", "bsi", "dco")):
+        return "computacao"
+    if "psicologia" in q_norm or "dpsi" in q_norm:
+        return "psicologia"
+    if "biologia" in q_norm or "dcb" in q_norm:
+        return "biologia"
+    return None
+
+def _ensure_contact_index(vectorstore: FAISS) -> None:
+    global CONTACT_INDEX_READY, PERSON_CONTACTS, ALIAS_LOOKUP, CONTACT_ALIAS_MAP
+    if CONTACT_INDEX_READY or vectorstore is None:
+        return
+    try:
+        raw_docs = list(getattr(vectorstore.docstore, "_dict", {}).values())
+    except Exception:
+        raw_docs = []
+    docs = normalize_documents(raw_docs)
+    contacts: Dict[str, Dict[str, Any]] = {}
+
+    for doc in docs:
+        text = getattr(doc, "page_content", "") or ""
+        if not text.strip():
+            continue
+        meta = getattr(doc, "metadata", {}) or {}
+        source = meta.get("source") or ""
+        dept = _guess_dept_from_source(source)
+        for block in _split_blocks(text):
+            lines = [ln.strip() for ln in block.splitlines() if ln.strip()]
+            if not lines:
+                continue
+            name_candidate = _clean_person_name(lines[0])
+            if len(name_candidate.split()) < 2:
+                continue
+            name_tokens = {_strip_accents_lower(tok) for tok in _tokenize_letters(name_candidate)}
+            if name_tokens & _GENERIC_NAME_TOKENS:
+                continue
+            contacts_found = _extract_contacts([block])
+            phones = contacts_found.get("phones", [])
+            emails = contacts_found.get("emails", [])
+            if not phones and not emails:
+                continue
+            canonical = _strip_accents_lower(name_candidate)
+            CONTACT_ALIAS_MAP[canonical] = canonical
+            entry = contacts.setdefault(canonical, {
+                "name": name_candidate,
+                "phones": set(),
+                "emails": set(),
+                "departments": set(),
+                "dept_slugs": set(),
+                "citations": [],
+            })
+            entry["phones"].update(phones)
+            entry["emails"].update(emails)
+            if dept:
+                dept_slug = DEPT_DISPLAY_TO_SLUG.get(_strip_accents_lower_safe(dept), _strip_accents_lower_safe(dept))
+                entry["departments"].add(dept)
+                if dept_slug:
+                    entry["dept_slugs"].add(dept_slug)
+            entry["citations"].append(_as_citation(doc))
+
+            # Enrich alias lookup with individual tokens
+            for token in _tokenize_letters(name_candidate):
+                token_norm = _strip_accents_lower(token)
+                if len(token_norm) >= 4 and token_norm not in _GENERIC_NAME_TOKENS:
+                    CONTACT_ALIAS_MAP[token_norm] = canonical
+                    ALIAS_LOOKUP.setdefault(token_norm, canonical)
+
+            # Map configured aliases (from terms.yml) that match this name
+            for alias_key, alias_variants in list(ALIASES.items()):
+                alias_key_norm = _strip_accents_lower(alias_key)
+                alias_variants_norm = {_strip_accents_lower(a) for a in alias_variants or []}
+                if (alias_key_norm in name_tokens) or (alias_variants_norm & name_tokens):
+                    CONTACT_ALIAS_MAP[alias_key_norm] = canonical
+                    ALIAS_LOOKUP[alias_key_norm] = canonical
+                    for alias_norm in alias_variants_norm:
+                        if len(alias_norm) >= 3:
+                            CONTACT_ALIAS_MAP[alias_norm] = canonical
+                            ALIAS_LOOKUP[alias_norm] = canonical
+
+    # Materialize citations and propagate aliases
+    for canonical, entry in list(contacts.items()):
+        entry["phones"] = sorted(entry["phones"])
+        entry["emails"] = sorted(entry["emails"])
+        entry["departments"] = {d for d in entry["departments"] if d}
+        entry["dept_slugs"] = {d for d in entry["dept_slugs"] if d}
+        entry["citations"] = _unique_citations(entry["citations"])
+        for alias, canonical_target in list(ALIAS_LOOKUP.items()):
+            canonical_target_norm = _strip_accents_lower_safe(canonical_target)
+            if canonical_target_norm == canonical:
+                CONTACT_ALIAS_MAP[alias] = canonical
+        for token in _tokenize_letters(entry["name"]):
+            token_norm = _strip_accents_lower(token)
+            if len(token_norm) >= 4 and token_norm not in _GENERIC_NAME_TOKENS:
+                CONTACT_ALIAS_MAP[token_norm] = canonical
+                ALIAS_LOOKUP.setdefault(token_norm, canonical)
+
+    PERSON_CONTACTS = contacts
+    CONTACT_INDEX_READY = True
+    sample_keys = list(PERSON_CONTACTS.keys())[:5]
+    sample_aliases = list(CONTACT_ALIAS_MAP.items())[:8]
+    print(f"[CONTACT] index built with {len(PERSON_CONTACTS)} people; sample={sample_keys}; aliases={sample_aliases}", flush=True)
+
+def _contact_lookup(question: str) -> Optional[Dict[str, Any]]:
+    if not PERSON_CONTACTS:
+        return None
+    q_norm = _strip_accents_lower(question)
+    print(f"[CONTACT] question_norm={q_norm}", flush=True)
+    if not any(term in q_norm for term in ("telefone", "tel", "ramal", "contato", "numero", "número", "celular", "whatsapp")):
+        print("[CONTACT] no contact keyword found", flush=True)
+        return None
+
+    tokens = {_strip_accents_lower(t) for t in _candidate_terms(question)}
+    dept_hint = _dept_hint_from_question(question)
+    print(f"[CONTACT] lookup tokens={tokens} dept_hint={dept_hint}", flush=True)
+    for token in tokens:
+        canonical = CONTACT_ALIAS_MAP.get(token)
+        if canonical is None:
+            alias_target = ALIAS_LOOKUP.get(token)
+            if alias_target:
+                canonical = CONTACT_ALIAS_MAP.get(_strip_accents_lower(alias_target), _strip_accents_lower(alias_target))
+            else:
+                canonical = token
+        print(f"[CONTACT] token={token} resolves_to={canonical if canonical else 'None'}", flush=True)
+        entry = PERSON_CONTACTS.get(canonical)
+        if not entry:
+            print(f"[CONTACT] no entry for {canonical}", flush=True)
+            continue
+        dept_slugs = entry.get("dept_slugs") or set()
+        if dept_hint and dept_slugs and dept_hint not in dept_slugs:
+            print(f"[CONTACT] entry {entry['name']} skipped due to dept mismatch {dept_slugs}", flush=True)
+            continue
+        print(f"[CONTACT] hit {entry['name']} with phones={entry.get('phones')}", flush=True)
+        return {
+            "canonical": canonical,
+            "matched_token": token,
+            "entry": entry,
+            "dept_hint": dept_hint,
+        }
+    return None
+
+def _format_contact_answer(entry: Dict[str, Any]) -> str:
+    name = entry.get("name") or "Contato"
+    phones = entry.get("phones") or []
+    emails = entry.get("emails") or []
+    depts = entry.get("departments") or set()
+    lines = [f"### Contato", f"**Nome:** {name}"]
+    if depts:
+        lines.append(f"**Departamento(s):** {', '.join(sorted(depts))}")
+    if phones:
+        lines.append(f"**Telefone(s):** {', '.join(phones)}")
+    if emails:
+        lines.append(f"**E-mail(s):** {', '.join(emails)}")
+    return "\n".join(lines)
 
 #### RERANK -----------------------------------------------------------------------
 # Variável global para armazenar o modelo do reranker e evitar recarregá-lo.
@@ -566,7 +769,7 @@ def _gen_multi_queries(user_query: str, n: int, llm=None) -> List[str]:
     2) expansões vindas de SYNONYMS (do YAML)
     3) (opcional) variações via LLM, se um wrapper for passado em `llm`
     """
-    n = max(1, n)
+    requested_n = max(1, n)
 
     # 1) variações locais
     base_local = _gen_variants_local(user_query)
@@ -598,8 +801,9 @@ def _gen_multi_queries(user_query: str, n: int, llm=None) -> List[str]:
             llm_vars = []
 
     # 4) mescla e corta em n
-    merged = _dedupe_preserve_order([user_query] + base_local + syn_vars + custom_vars + llm_vars)
-    return merged[:n]
+    merged = _dedupe_preserve_order([user_query] + custom_vars + base_local + syn_vars + llm_vars)
+    effective_n = max(requested_n, 1 + len(custom_vars))
+    return merged[:effective_n]
 
 
 _SENT_SPLIT = re.compile(r"(?<=[\.\!\?\;\:])\s+|\n+")  # Regex para dividir texto em sentenças
@@ -1164,6 +1368,9 @@ def _rerank_and_get_confidence(candidates: List[Document], question: str, dbg: d
     
     _log_debug(f"Rerank top: {len(final_docs)}")
 
+    # Apply heuristics to boost contact-related documents when question asks for phone/contato
+    final_docs, final_scores = _apply_contact_boost(question, final_docs, final_scores, dbg)
+
     # Calculate final confidence
     conf = 0.0
     if final_scores:
@@ -1175,6 +1382,111 @@ def _rerank_and_get_confidence(candidates: List[Document], question: str, dbg: d
     print(f"[RETRIEVE] mq={MQ_ENABLED} variants={len(dbg['mq_variants'])} merged={len(candidates)} reranked={len(final_docs)} conf={conf:.3f}")
     
     return final_docs, conf
+
+def _apply_contact_boost(question: str, docs: List[Document], scores: List[float], dbg: dict) -> Tuple[List[Document], List[float]]:
+    """Boost rerank scores for documents that match contact intents (telephone, ramal, etc.)."""
+    if not docs:
+        return docs, scores
+
+    question_norm = _strip_accents_lower(question)
+    wants_contact = any(term in question_norm for term in ("telefone", "telefone?", "tel", "ramal", "contato", "numero", "número", "celular", "whatsapp"))
+    if not wants_contact:
+        return docs, scores
+
+    raw_name_terms = {
+        _strip_accents_lower(t)
+        for t in _candidate_terms(question)
+        if t.isalpha() and len(t) >= 4
+    }
+    generic_terms = {
+        "computacao", "computação", "comp", "bcc", "bsi",
+        "departamento", "departamentos", "curso", "cursos",
+        "faculdade", "secao", "seção", "stgp", "stf", "dco",
+        "telefone", "telefones", "contato", "contatos", "ramal",
+        "qual", "onde", "email", "e-mail", "numero", "número"
+    }
+
+    name_terms: set[str] = set()
+    for term in raw_name_terms:
+        if term in generic_terms:
+            continue
+        matched = False
+        canonical = CONTACT_ALIAS_MAP.get(term)
+        if canonical:
+            name_terms.add(canonical)
+            matched = True
+        else:
+            for base_norm, alias_list in ALIASES.items():
+                base_norm_s = _strip_accents_lower(base_norm)
+                alias_norms = {_strip_accents_lower(a) for a in alias_list}
+                variants = alias_norms | {base_norm_s}
+                CONTACT_ALIAS_MAP.setdefault(base_norm_s, base_norm_s)
+                for alias in alias_norms:
+                    CONTACT_ALIAS_MAP.setdefault(alias, base_norm_s)
+            if term in variants:
+                name_terms.add(base_norm_s)
+                matched = True
+                break
+        if not matched:
+            name_terms.add(term)
+
+    boosted: List[Tuple[float, float, float, Document]] = []
+    aliases_for_names = {
+        alias for alias, canon in CONTACT_ALIAS_MAP.items()
+        if canon in name_terms
+    }
+
+    for doc, base_score in zip(docs, scores):
+        text = getattr(doc, "page_content", "") or ""
+        text_norm = _strip_accents_lower(text)
+        contacts = _extract_contacts([text])
+        doc_phones = contacts.get("phones", [])
+
+        bonus = 0.0
+        has_name = bool(name_terms) and (
+            any(canon in text_norm for canon in name_terms) or
+            any(alias in text_norm for alias in aliases_for_names)
+        )
+        has_phone = bool(doc_phones)
+        source = (getattr(doc, "metadata", {}) or {}).get("source", "") or ""
+        if has_name:
+            bonus += 10.0
+        else:
+            bonus -= 10.0
+        if has_phone:
+            bonus += 6.0
+        else:
+            bonus -= 6.0
+        if has_name and has_phone:
+            bonus += 12.0
+        if "docentes" in source and "dep_" in source:
+            bonus += 4.0
+
+        boosted.append((float(base_score) + bonus, float(base_score), bonus, doc))
+
+    boosted.sort(key=lambda item: item[0], reverse=True)
+
+    new_docs = [doc for _, _, _, doc in boosted]
+    new_scores = [score for score, _, _, _ in boosted]
+
+    if dbg is not None:
+        rerank_dbg = dbg.setdefault("rerank", {})
+        top_k = int(rerank_dbg.get("top_k") or len(new_docs))
+        previews = []
+        for score_new, score_base, bonus, doc in boosted[:top_k]:
+            meta = getattr(doc, "metadata", {}) or {}
+            preview = _norm_ws((doc.page_content or "")[:120])
+            previews.append({
+                "source": meta.get("source"),
+                "chunk": meta.get("chunk"),
+                "preview": preview,
+                "score": score_new,
+                "base_score": score_base,
+                "bonus": bonus,
+            })
+        rerank_dbg["scored"] = previews
+
+    return new_docs, new_scores
 
 def _finalize_result(question: str, docs: List[Document], conf: float, dbg: dict) -> Dict[str, Any]:
     """Generates the final text answer with LLM and packages the full response dictionary."""
@@ -1401,6 +1713,33 @@ def answer_question(
 
     if not q:
         return {"answer": "Não entendi a pergunta. Pode reformular?", "citations": [], "context_found": False}
+
+    _ensure_contact_index(vectorstore)
+    contact_match = _contact_lookup(q)
+    if contact_match is not None:
+        entry = contact_match["entry"]
+        answer_text = _format_contact_answer(entry)
+        citations = _unique_citations(entry.get("citations", []))[:MAX_SOURCES]
+        result = {
+            "answer": answer_text,
+            "citations": citations,
+            "context_found": True,
+            "confidence": 0.99,
+        }
+        dbg["route"] = "contact_fallback"
+        dbg["chosen"]["confidence"] = 0.99
+        dbg["contact_lookup"] = {
+            "matched_token": contact_match["matched_token"],
+            "canonical": contact_match["canonical"],
+            "dept_hint": contact_match["dept_hint"],
+            "phones": entry.get("phones", []),
+            "emails": entry.get("emails", []),
+        }
+        dbg["timing_ms"]["total"] = _elapsed_ms(t0)
+        if debug and DEBUG_PAYLOAD:
+            result["debug"] = dbg
+        _log_telemetry_event(q, dbg, result)
+        return result
 
     # 1. Carregar todos os documentos da base (para busca lexical)
     try:
