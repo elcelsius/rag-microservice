@@ -41,7 +41,7 @@ Este é o núcleo da busca e geração de respostas, acionado pelo agente.
 flowchart TD
     Q[Pergunta Autônoma] --> MQ[Multi-Query];
     MQ -->|q1..qn| FAISS[(Busca Vetorial FAISS)];
-    FAISS --> RERANK[CrossEncoder (Rerank)];
+    FAISS --> RERANK[CrossEncoder - Rerank];
     RERANK --> CTX[Seleção de Contexto];
     CTX --> LLM[LLM - Geração da Resposta Final];
     LLM --> OUT[Markdown + Citações];

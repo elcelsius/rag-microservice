@@ -2,65 +2,77 @@
 
 ```mermaid
 flowchart LR
-    subgraph Client
-      U[Usuário]
-    end
-    subgraph API
-      A[Flask API<br/>/agent/ask]
-      L[Endpoint legado<br/>/query]
-      H[Health/Metrics]
-    end
-    subgraph Retrieval
-      VS[(FAISS Index)]
-      EMB[HF Embeddings]
-      MQ[Multi-Query<br/> + Sinônimos]
-      LEX[Busca Lexical<br/> (hits por sentença + bônus de depto)]
-      RER[CrossEncoder<br/> (Reranker)]
-    end
-    subgraph LLM
-      TRI[LLM Triagem]
-      GEN[LLM Geração de Resposta]
-    end
-    subgraph ETL
-      LD[Loaders<br/>(pdf, docx, md, txt, code, ...)]
-      SPL[Chunking]
-      EMB_E[HF Embeddings]
-      VS_B[FAISS Build/Update]
-      DB[(PostgreSQL<br/>hashes/chunks)]
-    end
-    subgraph Agent
-      TG[Triagem]
-      AR[Auto Resolver<br/>(chama RAG)]
-      PD[Pedir Info]
-    end
+  subgraph Client
+    U[Usuário]
+  end
 
-    U -->|Pergunta (agente)| A
-    U -->|Pergunta (legado)| L
-    A -->|triagem LangGraph| TRI
-    TRI -->|ação| TG
-    TG -->|AUTO_RESOLVER| AR
-    TG -->|PEDIR_INFO| PD
+  subgraph API
+    A[Flask API<br/>/agent/ask]
+    L[Endpoint legado<br/>/query]
+    H[Health/Metrics]
+  end
 
-    L -->|bypass agente| LEX
-    L -->|bypass agente| MQ
+  subgraph Retrieval
+    VS[(FAISS Index)]
+    EMB[HF Embeddings]
+    MQ[Multi-Query<br/>+ Sinônimos]
+    LEX[Busca Lexical<br/>hits por sentença + bônus de depto]
+    RER[CrossEncoder<br/>Reranker]
+  end
 
-    AR -->|Rota 1| LEX
-    LEX -->|se encontrou| GEN
-    AR -->|Rota 2| MQ --> VS --> RER --> GEN
-    GEN -->|Resposta + Citações + Confiança| A
-    GEN -->|Resposta legado| L
+  subgraph LLM
+    TRI[LLM Triagem]
+    GEN[LLM Geração de Resposta]
+  end
 
-    H --- A
+  subgraph ETL
+    LD[Loaders<br/>pdf, docx, md, txt, code, ...]
+    SPL[Chunking]
+    EMB_E[HF Embeddings]
+    VS_B[FAISS Build/Update]
+    DB[(PostgreSQL<br/>hashes/chunks)]
+  end
 
-    %% ETL
-    LD --> SPL --> EMB_E --> VS_B --> VS
-    VS_B --> DB
-    DB -->|incremental| VS_B
+  subgraph Agent
+    TG[Triagem]
+    AR[Auto Resolver<br/>chama RAG]
+    PD[Pedir Info]
+  end
 
-    %% Embeddings em runtime
-    A --- EMB
-    A --- VS
-    L --- VS
+  %% Entradas do usuário (LINHAS SEPARADAS!)
+  U -->|Pergunta agente| A
+  U -->|Pergunta legado| L
+
+  %% Fluxo do agente
+  A -->|triagem LangGraph| TRI
+  TRI -->|ação| TG
+  TG -->|AUTO_RESOLVER| AR
+  TG -->|PEDIR_INFO| PD
+
+  %% Rotas de recuperação
+  L -->|bypass agente| LEX
+  L -->|bypass agente| MQ
+
+  AR -->|Rota 1| LEX
+  LEX -->|se encontrou| GEN
+  AR -->|Rota 2| MQ --> VS --> RER --> GEN
+
+  %% Respostas
+  GEN -->|Resposta + Citações + Confiança| A
+  GEN -->|Resposta legado| L
+
+  %% Saúde/telemetria
+  H --- A
+
+  %% ETL
+  LD --> SPL --> EMB_E --> VS_B --> VS
+  VS_B --> DB
+  DB -->|incremental| VS_B
+
+  %% Embeddings/índice em runtime
+  A --- EMB
+  A --- VS
+  L --- VS
 ```
 
 ## Passo a passo (resumo)
