@@ -41,11 +41,16 @@ Este é o núcleo da busca e geração de respostas, acionado pelo agente.
 flowchart TD
     Q[Pergunta Autônoma] --> MQ[Multi-Query];
     MQ -->|q1..qn| FAISS[(Busca Vetorial FAISS)];
-    FAISS --> RERANK[CrossEncoder - Rerank];
+    MQ -->|q1..qn| BM25[(Busca Lexical BM25)];
+    FAISS --> FUSE[MMR + RRF];
+    BM25 --> FUSE;
+    FUSE --> RERANK[CrossEncoder - Rerank];
     RERANK --> CTX[Seleção de Contexto];
     CTX --> LLM[LLM - Geração da Resposta Final];
     LLM --> OUT[Markdown + Citações];
 ```
+
+O pipeline executa múltiplas variações da pergunta, consulta simultaneamente o índice vetorial (FAISS) e a busca lexical BM25, aplica **MMR (λ≈0,3)** para evitar duplicidade, realiza a fusão **RRF** e, por fim, refina a ordem com o cross-encoder `cross-encoder/ms-marco-MiniLM-L-6-v2` (configurável no `.env`). Caso a confiança final fique abaixo do limiar configurado, o sistema tenta automaticamente uma segunda rodada de busca, expandindo a consulta com sinônimos institucionais antes de pedir esclarecimentos ao usuário.
 
 ---
 
@@ -158,6 +163,19 @@ Use `--agent-endpoint` e `--legacy-endpoint` para apontar para URLs específicas
 O relatório consolida métricas de **Recuperação** (Recall, MRR, nDCG). Quando a chave `GOOGLE_API_KEY` está definida, o script também produz as métricas de **Geração** (Faithfulness e Answer Relevancy) via RAGAs.
 > **Checklist rápido:** o script agora emite mensagens explícitas quando as dependências do RAGAs ou a `GOOGLE_API_KEY` estão ausentes. O teste `python -m pytest tests/test_eval_rag.py` cobre esses cenários e garante proteção regressiva.
 
+### Dump de debug por pergunta
+
+Para auditar rapidamente quais rotas, candidatos e metadados foram usados em cada pergunta do dataset, use:
+
+```bash
+python scripts/dump_eval_debug.py \
+  --dataset evaluation_dataset.jsonl \
+  --mode agent \
+  --output reports/debug-dump-$(date +%Y%m%d-%H%M%S)
+```
+
+O script envia cada pergunta com `debug=true` e salva um JSON por item (incluindo `debug.timing_ms`, rota escolhida, top-k pré/pós-rerank, contatos extraídos e confiança final). Em ambientes Windows/PowerShell substitua a variável de data por um nome fixo de pasta, por exemplo `--output reports/debug-dump`.
+
 ## Executando os Testes
 
 O projeto utiliza `pytest` para testes automatizados. Para executar a suíte de testes:
@@ -233,11 +251,12 @@ As principais variáveis de ambiente para configurar o comportamento do sistema 
 
 - **LLM**: `GOOGLE_API_KEY` e `GOOGLE_MODEL` (ex.: `models/gemini-2.5-flash-lite`).
 - **Embeddings/FAISS**: `EMBEDDINGS_MODEL` (ETL e API precisam usar o mesmo valor) e `FAISS_STORE_DIR`.
-- **Reranker**: `RERANKER_PRESET` (`off | fast | balanced | full`) e `RERANKER_ENABLED=true`. O preset `balanced` usa `jinaai/jina-reranker-v1-base-multilingual` (boa qualidade no CPU). Ajuste `RERANKER_CANDIDATES`, `RERANKER_TOP_K`, `RERANKER_MAX_LEN` conforme latência desejada.
-- **Busca híbrida**: `HYBRID_ENABLED` (default `true`), `LEXICAL_THRESHOLD` (default `90`), `DEPT_BONUS`, `MAX_PER_SOURCE`.
-- **Multi-query e confiança**: `MQ_ENABLED`, `MQ_VARIANTS`, `CONFIDENCE_MIN` (com overrides opcionais `CONFIDENCE_MIN_QUERY`/`CONFIDENCE_MIN_AGENT`) e `REQUIRE_CONTEXT`.
+- **Reranker**: `RERANKER_PRESET` (`off | fast | balanced | full`) e `RERANKER_ENABLED=true`. No `.env` recomendamos o preset `full` com o cross-encoder `cross-encoder/ms-marco-MiniLM-L-6-v2`, `RERANKER_CANDIDATES=48`, `RERANKER_TOP_K=10` e `RERANKER_MAX_LEN=512`. Ajuste conforme a latência aceitável e o hardware disponível.
+- **Recuperação (BM25 + FAISS)**: `HYBRID_ENABLED` (default `true`), `RETRIEVAL_FETCH_K` (`80`), `RETRIEVAL_K` (`8`), `RETRIEVAL_MMR_LAMBDA` (`0.35`), `RETRIEVAL_MMR_LAMBDA_SHORT` (`0.25`), `RETRIEVAL_MIN_SCORE` (`0.25`), além dos parâmetros `MAX_PER_SOURCE`, `LEXICAL_THRESHOLD` e `DEPT_BONUS` para controlar boosts e diversidade.
+- **Multi-query e confiança**: `MQ_ENABLED`, `MQ_VARIANTS`, `MQ_USE_LLM`, `MQ_LLM_MAX_VARIANTS`, `CONFIDENCE_MIN` (com overrides opcionais `CONFIDENCE_MIN_QUERY`/`CONFIDENCE_MIN_AGENT`) e `REQUIRE_CONTEXT`. Quando a confiança final cai abaixo de `RETRIEVAL_MIN_SCORE`, o sistema dispara automaticamente uma segunda rodada de busca antes de abrir o fluxo de esclarecimento ao usuário.
 - **Formato da resposta**: `STRUCTURED_ANSWER` (markdown com resumo/fontes) e `MAX_SOURCES`.
 - **Agente (auto-refine)**: `AGENT_REFINE_ENABLED`, `AGENT_REFINE_MAX_ATTEMPTS`, `AGENT_REFINE_CONFIDENCE`.
+- **Ontologia/boosts institucionais**: `TERMS_YAML` aponta para `config/ontology/terms.yml` (ou caminho customizado). O mesmo valor deve ser usado na API e no ETL para manter sincronia de boosts, sinônimos e expansões multi-query.
 
 Caso queira forçar uma rota específica para debug, use `ROUTE_FORCE=lexical|vector`.
 
@@ -245,28 +264,22 @@ Caso queira forçar uma rota específica para debug, use `ROUTE_FORCE=lexical|ve
 
 ## Status Atual e Próximos Passos
 
-### Verificação Recente do Reranker
+### Panorama atual
 
-Em testes recentes, foi verificado que o componente de reranqueamento está ativo e funcional (`"enabled": true`). Ele reordena os *chunks* recuperados pela busca vetorial, aplicando uma lógica de relevância mais refinada.
+- O pipeline de recuperação combina BM25 + FAISS, aplica MMR (`λ≈0,3`) antes da fusão RRF e finaliza com o reranker `cross-encoder/ms-marco-MiniLM-L-6-v2`, entregando mais diversidade e precisão nos trechos recuperados.
+- Logs e telemetria agora registram as listas top-30/top-8 antes e depois do rerank, além da query efetivamente usada (incluindo a variação automática quando `RETRIEVAL_MIN_SCORE` é violado).
+- O cache Redis, o auto-refine do agente e os testes de API continuam verdes (`pytest tests/test_api.py`), garantindo que as alterações sejam regressão-free.
 
-**Conclusão:** O reranker funciona como esperado. No entanto, a resposta final gerada a partir do *chunk* melhor classificado apresentou um score de confiança muito baixo (ex: 0.0036). Isso indica que, embora o reordenamento técnico funcione, a relevância do conteúdo recuperado ainda não é ótima para responder a certas perguntas, sendo um ponto-chave para as próximas melhorias.
+### Ações sugeridas
 
-### Sugestões de Melhoria
+1. **Rodar avaliação objetiva**  
+   Execute `python eval_rag.py --out reports/` (com `GOOGLE_API_KEY` configurada) para medir o impacto das mudanças nas métricas RAGAs (`faithfulness`, `context_precision`, etc.) e versionar o relatório gerado.
 
-Para aumentar a relevância e a confiança das respostas, as seguintes ações são recomendadas:
+2. **Expandir ontologia e boosts**  
+   Revise `config/ontology/terms.yml` para adicionar sinônimos institucionais, ajustar `boosts.department` e enriquecer `mq_expansions`. Isso reforça o BM25 e beneficia a rodada automática de retry.
 
-1.  **Reforço Lexical e Boosts**:
-    *   Ajustar as expansões de multi-query em `CUSTOM_MQ_EXPANSIONS` para gerar variações mais ricas e direcionadas (ex: incluir termos como "e-mail stpg reserva").
-    *   Analisar as `mq_variants` (com `debug=true`) para validar a eficácia das novas expansões.
-
-2.  **Afinar Termos da Ontologia**:
-    *   Em `config/ontology/terms.yml`, aumentar os `boosts` de termos importantes e adicionar mais sinônimos (`aliases`) para conceitos como "reserva", "impressão", "LEPEC", etc.
-
-3.  **Reavaliação Contínua**:
-    *   Após cada ajuste, rodar o script de avaliação para medir o impacto de forma objetiva:
-        ```bash
-        python eval_rag.py --compare --label "nome-do-experimento"
-        ```
+3. **Monitorar as novas métricas**  
+   Acompanhe `/metrics` (novos contadores de cache, agent refine e low confidence) e os registros JSON em `logs/queries.log` para validar se o retry automático está ajudando — especialmente nas consultas de baixa confiança antes problemáticas.
 
 Para um roteiro mais detalhado de melhorias planejadas, consulte o documento [melhorias.md](docs/melhorias.md).
 
@@ -292,7 +305,3 @@ Resumo rápido:
 
 Para o passo a passo completo consulte [docs/publish_images.md](docs/publish_images.md).
 Observação: o script gera imagens para ai_projeto_api e ai_etl. A UI continua usando nginx:1.27-alpine e não precisa de push.
-
-
-
-

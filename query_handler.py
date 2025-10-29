@@ -34,6 +34,11 @@ except Exception:  # se não tiver sentence_transformers, segue sem rerank
         AutoTokenizer = None
         AutoModelForSequenceClassification = None
 
+try:
+    from rank_bm25 import BM25Okapi  # type: ignore
+except Exception:  # pragma: no cover - dependência opcional
+    BM25Okapi = None  # type: ignore
+
 
 # ==== Configurações do Reranker ====
 def _env_bool(name: str, default: bool = False) -> bool:
@@ -47,6 +52,19 @@ def _env_int(name: str, default: int, min_val: int | None = None, max_val: int |
     raw = os.getenv(name, str(default))
     try:
         v = int(str(raw).strip())
+    except Exception:
+        v = default
+    if min_val is not None and v < min_val:
+        v = min_val
+    if max_val is not None and v > max_val:
+        v = max_val
+    return v
+
+
+def _env_float(name: str, default: float, min_val: float | None = None, max_val: float | None = None) -> float:
+    raw = os.getenv(name)
+    try:
+        v = float(str(raw).strip()) if raw is not None else default
     except Exception:
         v = default
     if min_val is not None and v < min_val:
@@ -79,12 +97,12 @@ _RERANKER_PRESETS = {
         "trust_remote_code": False,
     },
     "balanced": {
-        "name": "jinaai/jina-reranker-v1-base-multilingual",
-        "candidates": 36,
-        "top_k": 6,
+        "name": "BAAI/bge-reranker-v2-m3",
+        "candidates": 40,
+        "top_k": 8,
         "max_len": 512,
         "device": "cpu",
-        "trust_remote_code": True,
+        "trust_remote_code": False,
     },
     "full": {
         "name": "jinaai/jina-reranker-v2-base-multilingual",
@@ -127,7 +145,16 @@ LEXICAL_THRESHOLD= _env_int("LEXICAL_THRESHOLD", 90, 60, 100)  # antes estava fi
 DEPT_BONUS       = _env_int("DEPT_BONUS", 8, 0, 100)      # antes estava fixo (=8) no cálculo de score por depto
 MAX_PER_SOURCE   = _env_int("MAX_PER_SOURCE", 2, 1, 10)   # limita diversidade por 'source' no merge híbrido
 
+RETRIEVAL_FETCH_K = _env_int("RETRIEVAL_FETCH_K", 30, 1, 500)
+RETRIEVAL_K = _env_int("RETRIEVAL_K", 8, 1, 50)
+RETRIEVAL_MMR_LAMBDA = _env_float("RETRIEVAL_MMR_LAMBDA", 0.3, 0.0, 1.0)
+RETRIEVAL_MMR_LAMBDA_SHORT = _env_float("RETRIEVAL_MMR_LAMBDA_SHORT", 0.25, 0.0, 1.0)
+RETRIEVAL_MIN_SCORE = _env_float("RETRIEVAL_MIN_SCORE", 0.25, 0.0, 1.0)
+
 CACHE_DEFAULT_VERSION = os.getenv("INDEX_VERSION", "0")
+
+RRF_ENABLED = _env_bool("RRF_ENABLED", True)
+RRF_K = _env_int("RRF_K", 60, 1, 1000)
 
 
 def pipeline_cache_fingerprint() -> Dict[str, Any]:
@@ -142,6 +169,8 @@ def pipeline_cache_fingerprint() -> Dict[str, Any]:
         "route_force": ROUTE_FORCE,
         "mq_enabled": MQ_ENABLED,
         "mq_variants": MQ_VARIANTS,
+        "mq_use_llm": MQ_USE_LLM,
+        "mq_llm_max_variants": MQ_LLM_MAX_VARIANTS,
         "hybrid_enabled": HYBRID_ENABLED,
         "reranker_preset": RERANKER_PRESET,
         "reranker_enabled": RERANKER_ENABLED,
@@ -149,6 +178,13 @@ def pipeline_cache_fingerprint() -> Dict[str, Any]:
         "reranker_top_k": RERANKER_TOP_K,
         "reranker_max_len": RERANKER_MAX_LEN,
         "max_per_source": MAX_PER_SOURCE,
+        "retrieval_fetch_k": RETRIEVAL_FETCH_K,
+        "retrieval_k": RETRIEVAL_K,
+        "retrieval_mmr_lambda": RETRIEVAL_MMR_LAMBDA,
+        "retrieval_mmr_lambda_short": RETRIEVAL_MMR_LAMBDA_SHORT,
+        "retrieval_min_score": RETRIEVAL_MIN_SCORE,
+        "rrf_enabled": RRF_ENABLED,
+        "rrf_k": RRF_K,
     }
 
 
@@ -158,6 +194,8 @@ def pipeline_cache_fingerprint() -> Dict[str, Any]:
 MQ_ENABLED = os.getenv("MQ_ENABLED", "true").lower() == "true"
 # Número de variações da pergunta a serem geradas.
 MQ_VARIANTS = int(os.getenv("MQ_VARIANTS", "3"))
+MQ_USE_LLM = _env_bool("MQ_USE_LLM", False)
+MQ_LLM_MAX_VARIANTS = _env_int("MQ_LLM_MAX_VARIANTS", 2, 0, 10)
 # Limiar mínimo de confiança do reranker para considerar uma resposta válida.
 CONFIDENCE_MIN = float(os.getenv("CONFIDENCE_MIN", "0.32"))
 CONFIDENCE_MIN_QUERY = float(os.getenv("CONFIDENCE_MIN_QUERY", str(CONFIDENCE_MIN)))
@@ -180,6 +218,16 @@ def _dedupe_preserve_order(items, key=lambda x: x):
         seen.add(k)
         out.append(it)
     return out
+
+
+def _doc_identity(doc: Document) -> tuple:
+    """Retorna uma chave estável para identificar documentos em fusões."""
+    meta = getattr(doc, "metadata", {}) or {}
+    return (
+        meta.get("source") or "",
+        meta.get("chunk"),
+        (getattr(doc, "page_content", "") or "")[:64],
+    )
 
 
 def _collect_citations_from_docs(docs, max_sources=MAX_SOURCES):
@@ -256,6 +304,12 @@ def _log_debug(msg: str):
 
 # FIM DO CÓDIGO INSERIDO (DEBUG HELPERS)
 
+def _strip_accents_lower_safe(text: str) -> str:
+    """Remove acentos, lower-case e lida com None de forma segura."""
+    if not text:
+        return ""
+    nfkd = unicodedata.normalize("NFD", text)
+    return "".join(ch for ch in nfkd if not unicodedata.combining(ch)).lower()
 
 # === Dicionário externo (departamentos, aliases, sinônimos, boosts) ===
 TERMS_PATH = os.getenv("TERMS_YAML", "/app/config/ontology/terms.yml")
@@ -297,9 +351,36 @@ CUSTOM_MQ_EXPANSIONS = {
     for key, values in (TERMS.get("mq_expansions") or {}).items()
 }
 BOOSTS = TERMS["boosts"]  # dict de boosts opcionais
+DEPARTMENT_TOKEN_TO_SLUG: Dict[str, str] = {}
+for slug, label in DEPARTMENTS.items():
+    slug_norm = _strip_accents_lower_safe(slug)
+    label_norm = _strip_accents_lower_safe(label)
+    if slug_norm:
+        DEPARTMENT_TOKEN_TO_SLUG[slug_norm] = slug_norm
+    if label_norm:
+        DEPARTMENT_TOKEN_TO_SLUG[label_norm] = slug_norm
+    for expansion in SYNONYMS.get(slug, []) or []:
+        token_norm = _strip_accents_lower_safe(expansion)
+        if token_norm:
+            DEPARTMENT_TOKEN_TO_SLUG[token_norm] = slug_norm
 CONTACT_INDEX_READY = False
 PERSON_CONTACTS: Dict[str, Dict[str, Any]] = {}
 CONTACT_ALIAS_MAP: Dict[str, str] = {}
+
+CONTACT_PHONE_KEYWORDS = (
+    "telefone",
+    "tel",
+    "ramal",
+    "numero",
+    "número",
+    "celular",
+    "whatsapp",
+)
+CONTACT_EMAIL_KEYWORDS = (
+    "email",
+    "e-mail",
+    "mail",
+)
 
 def _strip_accents_lower_safe(text: str) -> str:
     if not text:
@@ -476,7 +557,8 @@ def _contact_lookup(question: str) -> Optional[Dict[str, Any]]:
         return None
     q_norm = _strip_accents_lower(question)
     print(f"[CONTACT] question_norm={q_norm}", flush=True)
-    if not any(term in q_norm for term in ("telefone", "tel", "ramal", "contato", "numero", "número", "celular", "whatsapp")):
+    keywords = CONTACT_PHONE_KEYWORDS + CONTACT_EMAIL_KEYWORDS + ("contato",)
+    if not any(term in q_norm for term in keywords):
         print("[CONTACT] no contact keyword found", flush=True)
         return None
 
@@ -509,10 +591,20 @@ def _contact_lookup(question: str) -> Optional[Dict[str, Any]]:
         }
     return None
 
-def _format_contact_answer(entry: Dict[str, Any]) -> str:
+def _format_contact_answer(entry: Dict[str, Any], question: str) -> str:
     name = entry.get("name") or "Contato"
-    phones = entry.get("phones") or []
-    emails = entry.get("emails") or []
+    phones_all: List[str] = list(entry.get("phones") or [])
+    emails_all: List[str] = list(entry.get("emails") or [])
+    tokens = _question_tokens(question)
+
+    phones = _select_best_contacts(set(phones_all), tokens, top_n=2) if phones_all else []
+    emails = _select_best_contacts(set(emails_all), tokens, top_n=3) if emails_all else []
+
+    if not phones and phones_all:
+        phones = phones_all[:2]
+    if not emails and emails_all:
+        emails = emails_all[:3]
+
     depts = entry.get("departments") or set()
     lines = [f"### Contato", f"**Nome:** {name}"]
     if depts:
@@ -762,15 +854,161 @@ def _gen_variants_local(q: str) -> List[str]:
     return _dedupe_preserve_order(base + extra)
 
 
+
+
+def _question_tokens(question: str) -> Set[str]:
+    tokens = {_strip_accents_lower(tok) for tok in _candidate_terms(question)}
+    question_norm = _strip_accents_lower(question)
+    tokens.update(tok for tok in question_norm.split() if tok)
+    return {tok for tok in tokens if tok}
+
+def _question_wants_email(question: str) -> bool:
+    q_norm = _strip_accents_lower(question)
+    return any(keyword in q_norm for keyword in CONTACT_EMAIL_KEYWORDS)
+
+def _question_wants_phone(question: str) -> bool:
+    q_norm = _strip_accents_lower(question)
+    return any(keyword in q_norm for keyword in CONTACT_PHONE_KEYWORDS)
+
+def _collect_metadata_contacts(docs: List[Document]) -> Dict[str, Set[str]]:
+    emails: Set[str] = set()
+    phones: Set[str] = set()
+    for doc in docs:
+        meta = getattr(doc, "metadata", {}) or {}
+        for email in meta.get("emails") or []:
+            email_norm = (email or "").strip()
+            if email_norm:
+                emails.add(email_norm)
+        for phone in meta.get("phones") or []:
+            phone_norm = (phone or "").strip()
+            if phone_norm:
+                phones.add(phone_norm)
+    return {"emails": emails, "phones": phones}
+
+def _select_best_contacts(items: Set[str], question_tokens: Set[str], top_n: int = 3) -> List[str]:
+    scored: List[Tuple[int, int, str]] = []
+    for item in items:
+        item_norm = _strip_accents_lower(item)
+        score = 0
+        for token in question_tokens:
+            if token and token in item_norm:
+                score += 1
+        scored.append((score, -len(item), item))
+    scored.sort(reverse=True)
+    best = [item for score, _neg_len, item in scored if score > 0][:top_n]
+    if not best:
+        best = [item for _score, _neg_len, item in scored[:top_n]]
+    return best
+
+def _build_metadata_answer(question: str, docs: List[Document], dbg: dict) -> Optional[str]:
+    wants_email = _question_wants_email(question)
+    wants_phone = _question_wants_phone(question)
+    if not wants_email and not wants_phone:
+        return None
+    contacts = _collect_metadata_contacts(docs)
+    tokens = _question_tokens(question)
+    selected_emails = _select_best_contacts(contacts["emails"], tokens) if wants_email else []
+    selected_phones = _select_best_contacts(contacts["phones"], tokens) if wants_phone else []
+    if wants_email and not selected_emails:
+        return None
+    if wants_phone and not selected_phones:
+        return None
+    lines = ["### Contato"]
+    if selected_emails:
+        lines.append(f"**E-mail(s):** {', '.join(selected_emails)}")
+    if selected_phones:
+        lines.append(f"**Telefone(s):** {', '.join(selected_phones)}")
+    if dbg is not None:
+        dbg.setdefault("metadata", {})["direct_answer"] = {
+            "emails": selected_emails,
+            "phones": selected_phones,
+        }
+    return "\n".join(lines)
+
+def _normalize_variant_candidate(text: str) -> str:
+    """Limpa bullets/números e normaliza espaços para uma variação de consulta."""
+    variant = (text or "").strip()
+    variant = re.sub(r'^[-*\d\.\)\(]+\s*', '', variant)
+    variant = re.sub(r'\s+', ' ', variant).strip()
+    return variant
+
+def _gen_variants_llm(user_query: str, limit: int) -> List[str]:
+    """Gera variações extras via LLM usando o prompt dedicado."""
+    if not MQ_USE_LLM or limit <= 0:
+        return []
+    if not _MQ_VARIANTS_PROMPT:
+        return []
+    system_prompt = _MQ_VARIANTS_PROMPT.replace("{MAX_VARIANTS}", str(limit))
+    try:
+        text, _ = call_llm(system_prompt, user_query, expect_json=False, max_tokens=200)
+    except Exception as exc:
+        print(f"[MQ] WARN: Falha ao gerar variações com LLM: {exc}", flush=True)
+        return []
+
+    variants: List[str] = []
+    for raw in text.splitlines():
+        variant = _normalize_variant_candidate(raw)
+        if not variant:
+            continue
+        if variant.lower() == user_query.strip().lower():
+            continue
+        if variant in variants:
+            continue
+        variants.append(variant)
+        if len(variants) >= limit:
+            break
+    if variants:
+        _log_debug(f"MQ LLM variants: {variants}")
+    return variants
+
 def _gen_multi_queries(user_query: str, n: int, llm=None) -> List[str]:
     """
-    Gera variações para a busca:
-    1) variações locais simples
-    2) expansões vindas de SYNONYMS (do YAML)
-    3) (opcional) variações via LLM, se um wrapper for passado em `llm`
+    Gera variações para a busca combinando heurísticas locais, dicionário e LLM.
     """
     requested_n = max(1, n)
 
+    base_local = _gen_variants_local(user_query)
+
+    s_norm = _strip_accents_lower(user_query)
+    syn_vars: List[str] = []
+    custom_vars: List[str] = []
+    for key, exps in SYNONYMS.items():
+        if key in s_norm:
+            syn_vars.extend(exps)
+    for key, exps in CUSTOM_MQ_EXPANSIONS.items():
+        if key in s_norm:
+            custom_vars.extend(exps)
+
+    llm_vars: List[str] = []
+    if llm is not None:
+        try:
+            prompt = (
+                "Gere variações curtas e diferentes (1 por linha) desta pergunta, "
+                "mantendo o sentido, para busca em base de conhecimento:\n"
+                f"{user_query}\n"
+                f"(gere no máximo {n})"
+            )
+            txt = llm.generate_variants(prompt, n)  # adapte ao seu wrapper, se existir
+            llm_vars = [
+                _normalize_variant_candidate(ln)
+                for ln in txt.splitlines()
+                if _normalize_variant_candidate(ln)
+            ]
+        except Exception:
+            llm_vars = []
+
+    llm_vars_env: List[str] = []
+    if MQ_USE_LLM:
+        budget = max(0, requested_n - len(custom_vars) - len(base_local) - len(syn_vars) - len(llm_vars))
+        budget = min(budget, MQ_LLM_MAX_VARIANTS)
+        if budget > 0:
+            llm_vars_env = _gen_variants_llm(user_query, budget)
+
+    merged = _dedupe_preserve_order(
+        [user_query] + custom_vars + base_local + syn_vars + llm_vars + llm_vars_env
+    )
+    effective_n = max(requested_n, 1 + len(custom_vars) + len(llm_vars) + len(llm_vars_env))
+    return merged[:effective_n]
     # 1) variações locais
     base_local = _gen_variants_local(user_query)
 
@@ -835,6 +1073,15 @@ def _strip_accents_lower(s: str) -> str:
 def _tokenize_letters(text: str) -> List[str]:
     """Tokeniza um texto, extraindo apenas sequências de letras como palavras."""
     return WORD_RE.findall(text or "")
+
+
+def _tokenize_for_bm25(text: str) -> List[str]:
+    """Tokeniza texto para BM25 (minúsculas e sem acentos)."""
+    return [
+        _strip_accents_lower(token)
+        for token in _tokenize_letters(text or "")
+        if len(token) >= 2
+    ]
 
 
 def _person_block(text: str, name_term: Optional[str]) -> Optional[str]:
@@ -976,6 +1223,22 @@ def _sentence_hits_by_name(text: str, terms: List[str]) -> List[Tuple[str, int]]
     return uniq[:3]
 
 
+def _coerce_sentence_hits(snippets: Iterable[Tuple[str, Any]]) -> List[Tuple[str, int]]:
+    """Normaliza escores de sentenças para inteiros, mantendo até 3 entradas."""
+    normalized: List[Tuple[str, int]] = []
+    for snippet, score in snippets or []:  # type: ignore
+        if not snippet:
+            continue
+        try:
+            score_val = int(round(float(score)))
+        except Exception:
+            score_val = 0
+        normalized.append((snippet, score_val))
+        if len(normalized) >= 3:
+            break
+    return normalized
+
+
 NAME_SEQ_RE = re.compile(r"([A-ZÁ-Ü][a-zá-ü]+(?:\s+[A-ZÁ-Ü][a-zá-ü]+){1,5})")  # Regex para sequências de nomes
 
 
@@ -1087,6 +1350,7 @@ def _context_window_around_name(
 _TRIAGE_PROMPT = load_prompt("triagem_prompt.txt")
 _PEDIR_INFO_PROMPT = load_prompt("pedir_info_prompt.txt")
 _RESPOSTA_PROMPT = load_prompt("resposta_final_prompt.txt")
+_MQ_VARIANTS_PROMPT = load_prompt("mq_variants_prompt.txt")
 
 
 def _llm_triage(question: str, signals: Dict[str, Any]) -> Dict[str, Any]:
@@ -1162,24 +1426,84 @@ def _initialize_debug_payload(question: str) -> dict:
         "chosen": {"confidence": None},
     }
 
-def _perform_lexical_search(question: str, all_docs: List[Document]) -> List[Tuple[Document, List[Tuple[str, int]], int]]:
-    """Performs a lexical search over all documents based on terms from the question."""
-    dept_hints = _dept_hints_in_question(question)
-    terms = _candidate_terms(question)
-    if not terms or not all_docs:
+def _perform_lexical_search(question: str, all_docs: List[Document]) -> List[Tuple[Document, List[Tuple[str, int]], float]]:
+    """Performs a lexical search leveraging BM25 (fallbacks to legacy heuristics when unavailable)."""
+    if not all_docs:
         return []
 
-    lex_hits = []
-    for d in all_docs:
-        src = (d.metadata.get("source") or "").lower()
-        score_bonus = DEPT_BONUS if any(_strip_accents_lower(h) in src for h in dept_hints) else 0
-        hits = _sentence_hits_by_name(d.page_content or "", terms)
-        if hits:
-            best_score = max(sc for _, sc in hits) + score_bonus
-            lex_hits.append((d, hits, best_score))
-    
-    lex_hits.sort(key=lambda x: x[2], reverse=True)
-    return lex_hits[:6]
+    terms = _candidate_terms(question)
+    if not terms:
+        return []
+
+    if BM25Okapi is None:
+        return _perform_lexical_search_legacy(question, all_docs, terms)
+
+    query_tokens = _tokenize_for_bm25(question)
+    if not query_tokens:
+        return []
+
+    dept_hints = {_strip_accents_lower(h) for h in _dept_hints_in_question(question)}
+    corpus_tokens: List[List[str]] = []
+    corpus_docs: List[Document] = []
+    for doc in all_docs:
+        tokens = _tokenize_for_bm25(getattr(doc, "page_content", "") or "")
+        if not tokens:
+            continue
+        corpus_tokens.append(tokens)
+        corpus_docs.append(doc)
+
+    if not corpus_tokens:
+        return []
+
+    bm25 = BM25Okapi(corpus_tokens)
+    scores = bm25.get_scores(query_tokens)
+    ranked_indices = sorted(range(len(scores)), key=lambda idx: float(scores[idx]), reverse=True)
+
+    lex_hits: List[Tuple[Document, List[Tuple[str, int]], float]] = []
+    limit = min(RETRIEVAL_FETCH_K, len(ranked_indices))
+
+    for idx in ranked_indices[:limit]:
+        score = float(scores[idx])
+        if score <= 0:
+            continue
+        doc = corpus_docs[idx]
+        metadata = dict(getattr(doc, "metadata", {}) or {})
+        metadata["lexical_score"] = round(score, 6)
+        doc.metadata = metadata
+
+        raw_hits = _sentence_hits_by_name(doc.page_content or "", terms)
+        if not raw_hits:
+            top_sentences = _top_sentences(question, [doc.page_content], top_n=2)
+            raw_hits = [(sent, int(round(s * 100))) for sent, s in top_sentences]
+        hits = _coerce_sentence_hits(raw_hits)
+
+        src_norm = _strip_accents_lower(metadata.get("source", "") or "")
+        score_bonus = DEPT_BONUS if dept_hints and any(h in src_norm for h in dept_hints) else 0.0
+        lex_hits.append((doc, hits, score + score_bonus))
+
+    lex_hits.sort(key=lambda item: item[2], reverse=True)
+    return lex_hits[:RETRIEVAL_FETCH_K]
+
+
+def _perform_lexical_search_legacy(
+    question: str,
+    all_docs: List[Document],
+    terms: List[str],
+) -> List[Tuple[Document, List[Tuple[str, int]], float]]:
+    """Legacy lexical search based on fuzzy matching (used when BM25 is unavailable)."""
+    dept_hints = _dept_hints_in_question(question)
+    hits_out: List[Tuple[Document, List[Tuple[str, int]], float]] = []
+    for doc in all_docs:
+        src = (doc.metadata.get("source") or "").lower()
+        score_bonus = DEPT_BONUS if any(_strip_accents_lower(h) in src for h in dept_hints) else 0.0
+        hits = _sentence_hits_by_name(doc.page_content or "", terms)
+        if not hits:
+            continue
+        best_score = float(max(sc for _, sc in hits)) + score_bonus
+        hits_out.append((doc, hits, best_score))
+
+    hits_out.sort(key=lambda item: item[2], reverse=True)
+    return hits_out[:min(6, RETRIEVAL_FETCH_K)]
 
 def _handle_lexical_route(question: str, lex_hits: list, dbg: dict) -> Optional[Dict[str, Any]]:
     """
@@ -1254,6 +1578,93 @@ def _handle_lexical_route(question: str, lex_hits: list, dbg: dict) -> Optional[
     
     return result
 
+
+def _apply_question_boosts(question: str, docs: List[Document]) -> None:
+    """Aplica boosts condicionais de acordo com o setor do chunk."""
+    boosts = (BOOSTS.get("department") or {}) if BOOSTS else {}
+    if not boosts or not docs:
+        return
+    question_norm = _strip_accents_lower(question)
+    preferred_slugs = {
+        slug for token, slug in DEPARTMENT_TOKEN_TO_SLUG.items()
+        if token and token in question_norm
+    }
+    if not preferred_slugs:
+        return
+    for doc in docs:
+        metadata = dict(getattr(doc, "metadata", {}) or {})
+        slug = _strip_accents_lower(metadata.get("sector_slug") or metadata.get("department_slug") or "")
+        if not slug or slug not in boosts or slug not in preferred_slugs:
+            continue
+        factor = float(boosts.get(slug, 1.0))
+        if factor <= 0:
+            continue
+        vector_score = float(metadata.get("vector_score", 0.0))
+        lexical_score = float(metadata.get("lexical_score", 0.0))
+        if vector_score > 0:
+            metadata["vector_score"] = vector_score * factor
+        if lexical_score > 0:
+            metadata["lexical_score"] = lexical_score * factor
+        metadata.setdefault("boost_trace", []).append({"slug": slug, "factor": factor})
+        doc.metadata = metadata
+
+
+def _doc_similarity(doc_a: Document, doc_b: Document) -> float:
+    """Calcula similaridade textual aproximada entre dois documentos (0-1)."""
+    text_a = _strip_accents_lower(_norm_ws((doc_a.page_content or "")[:512]))
+    text_b = _strip_accents_lower(_norm_ws((doc_b.page_content or "")[:512]))
+    if not text_a or not text_b:
+        return 0.0
+    return fuzz.token_set_ratio(text_a, text_b) / 100.0
+
+
+def _apply_mmr_selection(
+    candidates: List[Document],
+    top_k: int,
+    lambda_param: float,
+    dbg: dict,
+) -> List[Document]:
+    """Applies Maximal Marginal Relevance to encourage diversity before reranking."""
+    if not candidates or top_k <= 0 or len(candidates) <= top_k or lambda_param <= 0:
+        return candidates
+
+    selected: List[Document] = []
+    remaining = list(candidates)
+    lambda_clamped = max(0.0, min(lambda_param, 1.0))
+
+    def _relevance(doc: Document) -> float:
+        meta = getattr(doc, "metadata", {}) or {}
+        vector_score = float(meta.get("vector_score", 0.0))
+        lexical_score = float(meta.get("lexical_score", 0.0))
+        base = vector_score if vector_score > 0 else lexical_score
+        return math.log1p(max(base, 0.0))
+
+    while remaining and len(selected) < top_k:
+        best_doc: Optional[Document] = None
+        best_score = -float("inf")
+        for doc in remaining:
+            rel = _relevance(doc)
+            div = 0.0
+            if selected:
+                div = max(_doc_similarity(doc, picked) for picked in selected)
+            mmr_score = lambda_clamped * rel - (1.0 - lambda_clamped) * div
+            if mmr_score > best_score:
+                best_score = mmr_score
+                best_doc = doc
+        if best_doc is None:
+            break
+        selected.append(best_doc)
+        remaining.remove(best_doc)
+
+    if dbg is not None:
+        dbg.setdefault("retrieval", {})["mmr"] = {
+            "lambda": lambda_clamped,
+            "pre": len(candidates),
+            "post": len(selected),
+        }
+    return selected
+
+
 def _perform_vector_search(question: str, vectorstore: FAISS, dbg: dict) -> List[Document]:
     """Performs vector search, including multi-query generation."""
     t_retrieval0 = _now()
@@ -1266,9 +1677,10 @@ def _perform_vector_search(question: str, vectorstore: FAISS, dbg: dict) -> List
     _log_debug(f"MQ variants: {queries}")
 
     # 2. Determine search budget per query
-    reranker = _get_reranker() # Check if reranker is available to set budget
-    k_candidates_total = RERANKER_CANDIDATES if reranker is not None else 10
-    per_q = max(3, math.ceil(k_candidates_total / max(1, len(queries))))
+    reranker = _get_reranker()
+    rerank_budget = RERANKER_CANDIDATES if reranker is not None else RETRIEVAL_FETCH_K
+    total_budget = max(RETRIEVAL_FETCH_K, rerank_budget, RETRIEVAL_K)
+    per_q = max(3, math.ceil(total_budget / max(1, len(queries))))
 
     # 3. Perform search for each query and collect candidates
     cands = []
@@ -1286,6 +1698,7 @@ def _perform_vector_search(question: str, vectorstore: FAISS, dbg: dict) -> List
                 similarity = 1.0 / (1.0 + max(dist, 0.0))
                 metadata = dict(getattr(doc, "metadata", {}) or {})
                 metadata["vector_score"] = similarity
+                metadata.setdefault("query_variants", []).append(query_variant)
                 doc.metadata = metadata
                 cands.append(doc)
         except Exception as e:
@@ -1295,11 +1708,22 @@ def _perform_vector_search(question: str, vectorstore: FAISS, dbg: dict) -> List
     
     # 4. Deduplicate and return
     def _doc_key(d: Document) -> tuple:
-        return (d.metadata.get("source", ""), d.metadata.get("chunk"), d.page_content[:64])
-    
+        return (d.metadata.get("source", ""), d.metadata.get("chunk"), (d.page_content or "")[:64])
+
     unique_cands = _dedupe_preserve_order(cands, key=_doc_key)
-    _log_debug(f"FAISS candidates from vector search: {len(unique_cands)}")
-    return unique_cands
+    _apply_question_boosts(question, unique_cands)
+    unique_cands.sort(
+        key=lambda d: float((getattr(d, "metadata", {}) or {}).get("vector_score", 0.0)),
+        reverse=True,
+    )
+    top_cands = unique_cands[:RETRIEVAL_FETCH_K]
+    retrieval_dbg = dbg.setdefault("retrieval", {})
+    retrieval_dbg["vector_top"] = [
+        _pack_doc(doc, (getattr(doc, "metadata", {}) or {}).get("vector_score"))
+        for doc in top_cands[:30]
+    ]
+    _log_debug(f"FAISS candidates from vector search: {len(top_cands)} (raw={len(unique_cands)})")
+    return top_cands
 
 def _merge_hybrid_results(vector_cands: List[Document], lex_hits: list, dbg: dict) -> List[Document]:
     """Merges lexical and vector search results for the hybrid pipeline."""
@@ -1307,27 +1731,51 @@ def _merge_hybrid_results(vector_cands: List[Document], lex_hits: list, dbg: dic
         dbg["route"] = "vector"
         return vector_cands
 
-    dbg["route"] = "hybrid"
-    _log_debug("Route: hybrid")
-    
     lex_docs = [d for d, _, _ in lex_hits]
-    
-    def _doc_key(d: Document) -> tuple:
-        return (d.metadata.get("source", ""), d.metadata.get("chunk"), d.page_content[:64])
 
-    # Combine and deduplicate, preserving order (vector results first)
-    all_merged = _dedupe_preserve_order(vector_cands + lex_docs, key=_doc_key)
+    if not RRF_ENABLED:
+        dbg["route"] = "hybrid"
+        _log_debug("Route: hybrid (concat)")
+        all_merged = _dedupe_preserve_order(vector_cands + lex_docs, key=_doc_identity)
+    else:
+        dbg["route"] = "hybrid_rrf"
+        _log_debug("Route: hybrid (RRF)")
+        scores: Dict[tuple, Dict[str, Any]] = {}
 
-    # Enforce diversity by limiting docs per source
-    by_src = {}
-    cands_merged = []
+        for rank, doc in enumerate(vector_cands, start=1):
+            key = _doc_identity(doc)
+            entry = scores.setdefault(key, {"doc": doc, "score": 0.0, "ranks": {}})
+            entry["score"] += 1.0 / (RRF_K + rank)
+            entry["ranks"]["vector"] = rank
+
+        for rank, (doc, _hits, _score) in enumerate(lex_hits, start=1):
+            key = _doc_identity(doc)
+            entry = scores.setdefault(key, {"doc": doc, "score": 0.0, "ranks": {}})
+            entry["score"] += 1.0 / (RRF_K + rank)
+            entry["ranks"]["lexical"] = rank
+
+        fused = sorted(scores.values(), key=lambda item: item["score"], reverse=True)
+        dbg.setdefault("hybrid", {})["rrf_scores"] = [
+            {
+                "source": (getattr(item["doc"], "metadata", {}) or {}).get("source"),
+                "chunk": (getattr(item["doc"], "metadata", {}) or {}).get("chunk"),
+                "score": round(item["score"], 6),
+                "ranks": item["ranks"],
+            }
+            for item in fused[:10]
+        ]
+
+        all_merged = [item["doc"] for item in fused]
+
+    by_src: Dict[str, int] = {}
+    cands_merged: List[Document] = []
     for d in all_merged:
         src = (getattr(d, "metadata", {}) or {}).get("source", "")
         by_src.setdefault(src, 0)
         by_src[src] += 1
         if by_src[src] <= MAX_PER_SOURCE:
             cands_merged.append(d)
-            
+
     _log_debug(f"Hybrid merged candidates: {len(cands_merged)}")
     return cands_merged
 
@@ -1490,7 +1938,20 @@ def _apply_contact_boost(question: str, docs: List[Document], scores: List[float
 
 def _finalize_result(question: str, docs: List[Document], conf: float, dbg: dict) -> Dict[str, Any]:
     """Generates the final text answer with LLM and packages the full response dictionary."""
-    # 1. Prepare context snippets for the LLM
+    metadata_answer = _build_metadata_answer(question, docs, dbg)
+    citations_clean = _collect_citations_from_docs(docs, max_sources=MAX_SOURCES)
+    if metadata_answer:
+        answer_out = metadata_answer
+        if STRUCTURED_ANSWER:
+            answer_out = _format_answer_markdown(question, metadata_answer, citations_clean, conf)
+        return {
+            "answer": answer_out,
+            "citations": citations_clean,
+            "context_found": bool(docs),
+            "confidence": conf,
+        }
+
+    # 1. Prepare context snippets para o LLM
     top_texts = [d.page_content for d in docs]
     sent_scores = _top_sentences(question, top_texts, top_n=3)
 
@@ -1511,7 +1972,6 @@ def _finalize_result(question: str, docs: List[Document], conf: float, dbg: dict
         final_text = " ".join(context_snippets)
 
     # 3. Format answer and citations
-    citations_clean = _collect_citations_from_docs(docs, max_sources=MAX_SOURCES)
     answer_out = final_text
     if STRUCTURED_ANSWER:
         answer_out = _format_answer_markdown(question, final_text, citations_clean, conf)
@@ -1605,9 +2065,53 @@ def _people_candidates_from_hits(question: str, lex_hits: list) -> List[Dict[str
     return candidates
 
 
+def _build_retry_query(question: str, lex_hits: list) -> Optional[str]:
+    """Gera uma consulta alternativa expandindo sinônimos e setores observados."""
+    question_norm = _strip_accents_lower(question)
+    expansions: List[str] = []
+    seen: Set[str] = set()
+
+    for term in _candidate_terms(question):
+        key = _strip_accents_lower(term)
+        for exp in SYNONYMS.get(key, []) or []:
+            exp_norm = _strip_accents_lower(exp)
+            if exp_norm and exp_norm not in seen and exp_norm not in question_norm:
+                expansions.append(exp.strip())
+                seen.add(exp_norm)
+
+    for doc, hits, _score in lex_hits[:3]:
+        meta = getattr(doc, "metadata", {}) or {}
+        sector = meta.get("sector")
+        if sector:
+            sector_norm = _strip_accents_lower(sector)
+            if sector_norm and sector_norm not in seen and sector_norm not in question_norm:
+                expansions.append(str(sector).strip())
+                seen.add(sector_norm)
+        for sigla in meta.get("siglas") or []:
+            sig_norm = _strip_accents_lower(sigla)
+            if sig_norm and sig_norm not in seen and sig_norm not in question_norm:
+                expansions.append(sigla.strip())
+                seen.add(sig_norm)
+        if hits:
+            snippet = hits[0][0]
+            for token in _tokenize_letters(snippet):
+                token_norm = _strip_accents_lower(token)
+                if token_norm in DEPARTMENT_TOKEN_TO_SLUG and token_norm not in seen and token_norm not in question_norm:
+                    expansions.append(token.strip())
+                    seen.add(token_norm)
+
+    expansions = _dedupe_preserve_order([exp for exp in expansions if exp])
+    if not expansions:
+        return None
+    addition = " ".join(expansions[:3])
+    retry_query = f"{question} {addition}".strip()
+    return retry_query if retry_query and retry_query != question else None
+
+
 def _build_low_confidence_response(question: str, conf: float, lex_hits: list) -> Dict[str, Any]:
     """Creates a clarification response when confidence is insufficient."""
     candidates = _people_candidates_from_hits(question, lex_hits)
+    low_notice = conf is None or (conf is not None and conf < RETRIEVAL_MIN_SCORE)
 
     if candidates:
         if len(candidates) == 1:
@@ -1637,11 +2141,12 @@ def _build_low_confidence_response(question: str, conf: float, lex_hits: list) -
             if not segments:
                 segments.append(cand["source"] or "sem detalhes")
             lines.append(f"{idx}. {' — '.join(segments)}")
-
         clarification = (
             "Encontrei mais de uma pessoa compatível. Informe o departamento, curso ou nome completo, "
             "ou escolha uma das opções:\n" + "\n".join(lines)
         )
+        if low_notice:
+            clarification = "Não localizei trechos com confiança suficiente. " + clarification
         citations = _collect_citations_from_docs([doc for cand in candidates[:3] for doc in cand["docs"]])
         return {
             "answer": clarification,
@@ -1660,6 +2165,8 @@ def _build_low_confidence_response(question: str, conf: float, lex_hits: list) -
                 options.append(label)
 
     clarification = _llm_pedir_info(question, options, prefer_attr="departamento") if options else "Poderia indicar o departamento, curso ou unidade relacionado?"
+    if low_notice:
+        clarification = "Não localizei contexto suficiente na base para responder. " + clarification
 
     return {
         "answer": clarification,
@@ -1680,7 +2187,12 @@ def _log_telemetry_event(question: str, dbg: dict, result: dict):
                 "confidence": dbg.get("chosen", {}).get("confidence"),
                 "timing_ms": dbg.get("timing_ms", {}),
                 "mq_variants": dbg.get("mq_variants", []),
-                "faiss_top": (dbg.get("faiss", {}) or {}).get("candidates", [])[:5],
+                "faiss_top": (dbg.get("faiss", {}) or {}).get("candidates", [])[:10],
+                "retrieval_vector": (dbg.get("retrieval", {}) or {}).get("vector_top", [])[:10],
+                "retrieval_lexical": (dbg.get("retrieval", {}) or {}).get("lexical_top", [])[:10],
+                "retrieval_pre": (dbg.get("retrieval", {}) or {}).get("pre_rerank", [])[:8],
+                "retrieval_post": (dbg.get("retrieval", {}) or {}).get("post_rerank", [])[:8],
+                "used_query": (dbg.get("retrieval", {}) or {}).get("used_query"),
                 "ctx_docs": len(result.get("citations", [])),
                 "reranker_preset": RERANKER_PRESET,
                 "answer_len": len((result.get("answer") or "")),
@@ -1691,13 +2203,67 @@ def _log_telemetry_event(question: str, dbg: dict, result: dict):
 
 
 # ==== Pipeline Principal de Resposta (Refatorado) ====
+def _run_retrieval_round(
+    question: str,
+    all_docs: List[Document],
+    vectorstore: FAISS,
+    dbg_ctx: dict,
+    *,
+    fetch_limit: int,
+    top_k: int,
+) -> Tuple[List[Document], float, List[Tuple[Document, List[Tuple[str, int]], float]]]:
+    """Executes one retrieval + rerank cycle and fills the provided debug dictionary."""
+    lex_hits = _perform_lexical_search(question, all_docs)
+    retrieval_dbg = dbg_ctx.setdefault("retrieval", {})
+    retrieval_dbg["lexical_top"] = [
+        {
+            "source": (getattr(doc, "metadata", {}) or {}).get("source"),
+            "chunk": (getattr(doc, "metadata", {}) or {}).get("chunk"),
+            "score": round(float(score), 4),
+            "preview": hits[0][0][:120] if hits else "",
+        }
+        for doc, hits, score in lex_hits[:10]
+    ]
+
+    vector_cands = _perform_vector_search(question, vectorstore, dbg_ctx)
+    merged_cands = _merge_hybrid_results(vector_cands, lex_hits, dbg_ctx)
+    retrieval_dbg["hybrid_top"] = [
+        _pack_doc(doc, (getattr(doc, "metadata", {}) or {}).get("vector_score"))
+        for doc in merged_cands[:30]
+    ]
+
+    mmr_target = min(fetch_limit, len(merged_cands)) if fetch_limit > 0 else len(merged_cands)
+    mmr_target = max(top_k, mmr_target)
+    question_tokens = _tokenize_letters(question)
+    lambda_dynamic = RETRIEVAL_MMR_LAMBDA
+    if RETRIEVAL_MMR_LAMBDA_SHORT > 0 and len(question_tokens) <= 6:
+        lambda_dynamic = min(RETRIEVAL_MMR_LAMBDA, RETRIEVAL_MMR_LAMBDA_SHORT)
+    retrieval_dbg["mmr_lambda"] = lambda_dynamic
+    mmr_cands = _apply_mmr_selection(merged_cands, mmr_target, lambda_dynamic, dbg_ctx)
+    retrieval_dbg["pre_rerank"] = [
+        _pack_doc(doc, (getattr(doc, "metadata", {}) or {}).get("vector_score"))
+        for doc in mmr_cands[:30]
+    ]
+
+    dbg_ctx["faiss"]["k"] = len(mmr_cands)
+    dbg_ctx["faiss"]["candidates"] = retrieval_dbg["pre_rerank"]
+
+    final_docs, conf = _rerank_and_get_confidence(mmr_cands, question, dbg_ctx)
+    retrieval_dbg["post_rerank"] = [
+        _pack_doc(doc, (getattr(doc, "metadata", {}) or {}).get("vector_score"))
+        for doc in final_docs[:top_k]
+    ]
+
+    return final_docs, conf, lex_hits
+
+
 def answer_question(
     question: str,
     embeddings_model: HuggingFaceEmbeddings,
     vectorstore: FAISS,
     *,
-    k: int = 5,
-    fetch_k: int = 20,
+    k: int | None = None,
+    fetch_k: int | None = None,
     debug: bool = False,
     confidence_min: float | None = None,
 ) -> Dict[str, Any]:
@@ -1710,6 +2276,18 @@ def answer_question(
     dbg = _initialize_debug_payload(q)
     threshold = confidence_min if confidence_min is not None else CONFIDENCE_MIN
     dbg["confidence_threshold"] = threshold
+    top_k_effective = k if k is not None else RETRIEVAL_K
+    fetch_limit = fetch_k if fetch_k is not None else RETRIEVAL_FETCH_K
+    if RERANKER_TOP_K:
+        top_k_effective = max(top_k_effective, RERANKER_TOP_K)
+    fetch_limit = max(fetch_limit, top_k_effective)
+    dbg.setdefault("config", {})["retrieval"] = {
+        "k": top_k_effective,
+        "fetch_k": fetch_limit,
+        "mmr_lambda": RETRIEVAL_MMR_LAMBDA,
+        "mmr_lambda_short": RETRIEVAL_MMR_LAMBDA_SHORT,
+        "min_score_retry": RETRIEVAL_MIN_SCORE,
+    }
 
     if not q:
         return {"answer": "Não entendi a pergunta. Pode reformular?", "citations": [], "context_found": False}
@@ -1718,7 +2296,7 @@ def answer_question(
     contact_match = _contact_lookup(q)
     if contact_match is not None:
         entry = contact_match["entry"]
-        answer_text = _format_contact_answer(entry)
+        answer_text = _format_contact_answer(entry, q)
         citations = _unique_citations(entry.get("citations", []))[:MAX_SOURCES]
         result = {
             "answer": answer_text,
@@ -1764,18 +2342,55 @@ def answer_question(
 
     # --- Início da Rota Vetorial / Híbrida ---
 
-    # 4. Realizar busca vetorial (com multi-query)
-    vector_cands = _perform_vector_search(q, vectorstore, dbg)
+    final_docs, conf, lex_hits = _run_retrieval_round(
+        q,
+        all_docs,
+        vectorstore,
+        dbg,
+        fetch_limit=fetch_limit,
+        top_k=top_k_effective,
+    )
+    used_query = q
 
-    # 5. Mesclar resultados lexicais e vetoriais (se rota híbrida estiver ativa)
-    merged_cands = _merge_hybrid_results(vector_cands, lex_hits, dbg)
-    
-    # Preencher snapshot de candidatos para debug
-    dbg["faiss"]["k"] = len(merged_cands)
-    dbg["faiss"]["candidates"] = [_pack_doc(d, (getattr(d, "metadata", {}) or {}).get("vector_score")) for d in merged_cands]
+    if conf < RETRIEVAL_MIN_SCORE:
+        retry_meta = dbg.setdefault("retry", {})
+        retry_meta["previous_confidence"] = conf
+        retry_query = _build_retry_query(q, lex_hits)
+        if retry_query and retry_query != q:
+            retry_dbg = _initialize_debug_payload(retry_query)
+            retry_docs, retry_conf, retry_lex_hits = _run_retrieval_round(
+                retry_query,
+                all_docs,
+                vectorstore,
+                retry_dbg,
+                fetch_limit=fetch_limit,
+                top_k=top_k_effective,
+            )
+            retry_meta["variant"] = retry_query
+            retry_meta["confidence"] = retry_conf
+            retry_meta["details"] = retry_dbg
+            if retry_conf > conf:
+                retry_meta["adopted"] = True
+                retry_meta["first_confidence"] = conf
+                retry_meta["first_retrieval"] = dbg.get("retrieval")
+                retry_meta["first_faiss"] = dbg.get("faiss")
+                retry_meta["first_rerank"] = dbg.get("rerank")
+                final_docs = retry_docs
+                conf = retry_conf
+                lex_hits = retry_lex_hits
+                used_query = retry_query
+                dbg["retrieval"] = retry_dbg.get("retrieval", {})
+                dbg["faiss"] = retry_dbg.get("faiss", dbg.get("faiss", {}))
+                dbg["rerank"] = retry_dbg.get("rerank", dbg.get("rerank", {}))
+                dbg["chosen"] = retry_dbg.get("chosen", dbg.get("chosen", {}))
+                dbg["mq_variants"] = retry_dbg.get("mq_variants", dbg.get("mq_variants", []))
+                dbg["timing_ms"].update(retry_dbg.get("timing_ms", {}))
+            else:
+                retry_meta["adopted"] = False
+        else:
+            retry_meta["skipped"] = True
 
-    # 6. Reordenar candidatos com Reranker e calcular confiança
-    final_docs, conf = _rerank_and_get_confidence(merged_cands, q, dbg)
+    dbg.setdefault("retrieval", {})["used_query"] = used_query
 
     # 7. Verificar se a confiança é suficiente para responder
     if (not final_docs) or (conf < threshold):

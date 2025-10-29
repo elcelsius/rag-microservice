@@ -5,8 +5,8 @@ Documento vivo com prioridades, tarefas acionáveis, critérios de aceite e coma
 ## 0) Foto atual do projeto (confirmado)
 
 - Endpoints: **`/query`** (RAG, também exposto como `/api/query`), **`/agent/ask`** (LangGraph, alias `/api/ask`), **`/metrics`** (uptime + contadores básicos).
-- ETL: loaders multi-formato, chunking `RecursiveCharacterTextSplitter`, embeddings HF, **FAISS** persistido.
-- Recuperação: híbrida (lexical + vetorial), **multi-query opcional**, **reranker configurável**.
+- ETL: loaders multi-formato, chunking por sentenças PT-BR com proteção para e-mails/URLs/telefones/siglas, embeddings HF, **FAISS** persistido.
+- Recuperação: híbrida (BM25 + embeddings) com RRF, MMR (λ=0,3), multi-query opcional e reranker BAAI/bge-reranker-v2-m3.
 - Avaliação: `eval_rag.py` implementa fluxo e relata retrieval; **RAGAs presente no código**, porém relatórios recentes mostram `ragas_available: false` (faltam deps/chave).
 - Docker: compose CPU/GPU, Web UI; `.env.example` bem preenchido.
 
@@ -168,13 +168,16 @@ def answer_question(..., debug=False):
 ### 5.1 Chunking
 - Testar grades: `chunk_size` {800, 1000, 1200, 1500} × `overlap` {100, 200}.
 - Considerar **chunking semântico** (por headings/parágrafos) quando houver estrutura.
+- Default atual: `chunk_size=300`, `chunk_overlap=60`, splitter por sentenças PT-BR com extração de metadados (emails/phones/urls/siglas) e tagging de setor, com proteção para não cortar credenciais.
 
 ### 5.2 Fusão Híbrida (RRF)
 - Em vez de fallback, aplicar **Reciprocal Rank Fusion** entre listas lexical e vetorial.
 - Parâmetro `RRF_K` (ex.: 60) e mistura com pesos para priorizar precisão nas top posições.
+- **Status:** ✅ Implementado com BM25 + MMR (λ=0,3), BAAI/bge-reranker-v2-m3 (`top_k=8`) e logging de top-30/top-8 para auditoria. Próximo passo é acompanhar ganhos nas métricas RAGAs.
 
 ### 5.3 Metadados & filtros
 - Enriquecer metadados no ETL (autor, data, tipo). Usar como **boost**/filtro no retrieval e exposição ao usuário nas fontes.
+- ✅ Extração de siglas/setor por chunk e boosts condicionais (departamentos) aplicados na fusão híbrida.
 
 ### 5.4 Reranker
 - Avaliar presets (`off|fast|balanced|full`) com RAGAs.
@@ -191,6 +194,8 @@ Expor em ambiente e criar dashboard de:
 - `cache_hits_total`, `cache_misses_total`
 - latência p50/p95/p99 (log/metrics)
 
+**Estado atual:** endpoint `/metrics` entrega JSON simples; precisamos migrar para exportador compatível (ex.: `prometheus_client` ou `prometheus_flask_exporter`) e publicar os nomes das séries no README.
+
 _Exemplo de scrape:_
 ```yaml
 scrape_configs:
@@ -206,13 +211,33 @@ scrape_configs:
 
 ---
 
-## 7) Portas de qualidade
+## 7) Segurança e Operabilidade
+
+### 7.1 Autenticação & autorização
+- ⬜ (Auth) Proteger `/query`, `/agent/ask` e `/metrics` com token assinado ou mTLS (sem expor endpoints abertos em produção).
+- ⬜ (RBAC) Permitir escopos distintos (leitura vs. administração/metrics) via claims ou API key diferenciada.
+
+### 7.2 Rate limiting e proteção contra abuso
+- ⬜ (Rate limit) Integrar `flask-limiter` com limites por IP/chave (ex.: `100/min`), retornando `429` e métricas por rota.
+- ⬜ (Circuit breaker) Adicionar backoff/deny-list temporário após estouro de limite ou falhas consecutivas no LLM.
+
+### 7.3 Gestão de segredos
+- ⬜ (Secrets) Remover `GOOGLE_API_KEY` versionada do `.env`; carregar via `docker-compose`/CI usando `env_file` separado ou secret manager.
+- ⬜ (Rotação) Documentar procedimento de rotação e adicionar verificação automatizada para evitar commits com chaves (`pre-commit` ou scanner).
+
+### 7.4 Hardening do deploy
+- ⬜ (Compose limits) Definir `deploy.resources.limits` (CPU/Mem), `ulimits` e usuário não root para `ai_projeto_api` e `ai_etl`.
+- ⬜ (Healthcheck estendido) Acrescentar verificações para Redis/Postgres/LLM no `/healthz` e alertar quando qualquer dependência estiver fora.
+
+---
+
+## 8) Portas de qualidade
 
 - **`make eval`**: alvo que roda `eval_rag.py` e grava em `reports/`.
 - **CI gate**: reprova PR se `faithfulness` cair > X% no golden set.
 - **Testes**: manter `pytest -k api` e adicionar smoke do `/agent/ask`.
 
-### 7.1 Validação local (workflow adotado)
+### 8.1 Validação local (workflow adotado)
 Como o projeto é mantido localmente, seguimos um “gate” manual antes de publicar novas alterações:
 
 1. **Preparar ambiente**  
@@ -237,36 +262,40 @@ Como o projeto é mantido localmente, seguimos um “gate” manual antes de pub
    python scripts/smoke_api.py http://localhost:5000/api
    ```
 4. **Checagem funcional de contatos**  
-   ```bash
-   curl -fsS http://localhost:8080/agent/ask ^
-     -H "Content-Type: application/json" ^
-     -d "{\"question\":\"Qual o telefone da Andreia da computacao?\",\"messages\":[],\"debug\":true}" ^
-     | python -m json.tool
-   ```
-   > A resposta deve vir pela rota `contact_fallback`, exibindo o telefone específico.
+    ```bash
+    curl -fsS http://localhost:8080/agent/ask ^
+      -H "Content-Type: application/json" ^
+      -d "{\"question\":\"Qual o telefone da Andreia da computacao?\",\"messages\":[],\"debug\":true}" ^
+      | python -m json.tool
+    ```
+    > A resposta deve vir pela rota `contact_fallback`, exibindo apenas os telefones e e-mails relacionados ao pedido (no máximo 2 telefones e 3 e-mails) com as respectivas citações.
 
 Esses passos funcionam como “gate” manual antes de criar novas imagens Docker ou publicar documentação.
 
 ---
 
-## 8) Checklist de implementação
+## 9) Checklist de implementação
 
-- ✅ (RAGAs) Adicionar deps e chave; relatório com `ragas_available: true`.
+- ✅ (RAGAs) Rodar `eval_rag.py` com chave válida; salvar relatório com `ragas_available: true`.
 - ⬜ (CI) Workflow mínimo executando `eval_rag.py` em subset. _(workflow disponível como `.github/workflows/eval.yml`; falta configurar o secret e validar o primeiro run)._
 - ✅ (Redis) Serviço no compose + `REDIS_URL` e `CACHE_TTL_SECONDS` no `.env`.
 - ✅ (Cache) Implementar no `/query` e `/agent/ask`; métricas de hit/miss.
 - ✅ (ETL) Invalidação/versão do cache ao fim do ETL.
 - ✅ (Agente) Nó `auto_refine` + telemetria; limite de iteração.
-- ⬜ (RRF) Fusão de ranqueamento híbrido com `RRF_K`.
+- ✅ (RRF) Fusão de ranqueamento híbrido com `RRF_K`.
 - ⬜ (Chunking) Experimentação com grade e, se possível, chunking semântico.
 - ⬜ (Observabilidade) Exportar métricas para Prometheus; logs estruturados.
+- ⬜ (Auth) Autenticação/RBAC nas rotas públicas.
+- ⬜ (Rate limit) Limitar requisições e expor métricas 429.
+- ⬜ (Secrets) Retirar chaves sensíveis do versionamento e documentar rotação.
+- ⬜ (Compose limits) Harden do docker-compose (limits, usuário não-root, healthcheck estendido).
 - ⬜ (Docs) Atualizar `README` com "Avaliação", "Cache" e "Observabilidade".
 - ✅ (Smokes) Integrar `scripts/smoke_api.py` ao pipeline de CI (futuro).
 - ⬜ (Manual) Executar checklist de validação local antes de publicar imagens/docs.
 
 ---
 
-## 9) Apêndice - variáveis úteis
+## 10) Apêndice - variáveis úteis
 
 ```
 GOOGLE_API_KEY=...
