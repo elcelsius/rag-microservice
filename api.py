@@ -22,6 +22,8 @@ from query_handler import (
     pipeline_cache_fingerprint,
     CONFIDENCE_MIN_QUERY,
     CONFIDENCE_MIN_AGENT,
+    RETRIEVAL_K,
+    RETRIEVAL_FETCH_K,
 )
 from agent_workflow import run_agent, AGENT_REFINE_MAX_ATTEMPTS
 from text_normalizer import normalize_documents, normalize_text
@@ -240,7 +242,7 @@ def query():
 
     if not debug_flag:
         cache_payload = _query_cache_payload(
-            question, k=5, fetch_k=20, confidence_min=confidence_threshold
+            question, k=RETRIEVAL_K, fetch_k=RETRIEVAL_FETCH_K, confidence_min=confidence_threshold
         )
         cached_response, cache_key, cache_available = cache_fetch(QUERY_NAMESPACE, cache_payload)
         if cache_available and cached_response is not None:
@@ -466,4 +468,3 @@ if __name__ == "__main__":
     _initialize_models()
     # Inicia o servidor de desenvolvimento do Flask.
     app.run(host="0.0.0.0", port=5000)
-

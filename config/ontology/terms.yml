@@ -1,8 +1,25 @@
+---
 # terms.yml
-# Arquivo de configuração centralizado para termos, siglas e entidades
-# do sistema RAG, compilado a partir da análise de 32 documentos.
+# Catálogo central de entidades, sinônimos e expansões de busca do RAG.
+# Objetivo: aumentar RECALL sem sacrificar precisão, padronizando nomes e
+# habilitando "multi-query" guiado para perguntas frequentes.
+#
+# Convenções:
+# - slugs minúsculos, sem espaços.
+# - manter variações com/sem acento em "synonyms" quando fizer sentido.
+# - adicionar expansões em "mq_expansions" apenas para intents frequentes.
 
-# Rótulos dos principais departamentos, diretorias e laboratórios (slug -> nome canônico)
+meta:
+  version: 1
+  last_updated: "2025-10-28"
+  notes: >
+    Ajustes: boost STPG; sinônimos sem acento; MQ para impressão LDC, STPG/Anfiteatro,
+    PIX, login/envio, reembolso, agenda/horário; leve limpeza e comentários.
+
+# ==============================================================================
+# 1) ENTIDADES (slug -> nome canônico)
+# ==============================================================================
+
 departments:
   # Órgãos Superiores
   diretoria: "Diretoria"
@@ -27,24 +44,26 @@ departments:
   dtad: "Diretoria Técnica Administrativa"
   dti: "Diretoria Técnica de Informática"
 
-  # Seções da DTA (Diretoria Técnica Acadêmica)
+  # Seções (DTA / DTAd)
   staepe: "Seção Técnica de Apoio ao Ensino, Pesquisa e Extensão"
   stg: "Seção Técnica de Graduação"
   stpg: "Seção Técnica de Pós-Graduação"
   sta: "Seção Técnica Acadêmica"
-
-  # Seções da DTAd (Diretoria Técnica Administrativa)
   stgp: "Seção Técnica de Gestão de Pessoas"
   stf: "Seção Técnica de Finanças"
   stm: "Seção Técnica de Materiais"
   saad: "Seção de Apoio Administrativo"
 
-  # Laboratórios e Outras Unidades
+  # Laboratórios / Outras Unidades
   ldc: "Laboratório Didático Computacional"
   lepec: "Laboratório de Ensino, Pesquisa e Extensão em Computação"
   ipmet: "Instituto de Pesquisas Meteorológicas"
 
-# Aliases para nomes comuns, usados para normalização e busca flexível.
+# ==============================================================================
+# 2) ALIASES DE NOMES PRÓPRIOS (grafias comuns, apelidos previsíveis)
+# Obs.: manter parcimônia para evitar ambiguidade.
+# ==============================================================================
+
 aliases:
   adriana: ["adrianna", "adryana"]
   alessandra: ["alessandara"]
@@ -97,11 +116,15 @@ aliases:
   valquíria: ["valquiria", "valkiria"]
   vinícius: ["vinicius"]
 
-# Siglas, abreviações e termos equivalentes. Essencial para o RAG.
+# ==============================================================================
+# 3) SINÔNIMOS / SIGLAS / EQUIVALÊNCIAS (chave -> lista de expansões)
+# Dica: inclua variações com e sem acento, e descrições claras.
+# ==============================================================================
+
 synonyms:
-  # Cursos de Graduação e Pós-Graduação
-  bcc: ["Bacharelado em Ciência da Computação", "ciencia da computacao"]
-  bsi: ["Bacharelado em Sistemas de Informação", "sistemas de informacao"]
+  # Cursos
+  bcc: ["Bacharelado em Ciência da Computação", "ciencia da computacao", "Ciência da Computação"]
+  bsi: ["Bacharelado em Sistemas de Informação", "sistemas de informacao", "Sistemas de Informação"]
   comp: ["Computação", "computacao"]
   psico_curso: ["Psicologia"]
   pedagogia: ["Licenciatura em Pedagogia"]
@@ -109,55 +132,46 @@ synonyms:
   meteorologia: ["Bacharelado em Meteorologia"]
   fisica_materiais: ["Bacharelado em Física dos Materiais"]
   fis: ["Física", "fisica"]
-  pos_graduacao: ["Pós-Graduação", "pos graduacao"]
-  lic_psicologia: ["Licenciatura em Psicologia e Formação de Psicólogos"]
-  lic_fisica: ["Licenciatura em Física"]
+  pos_graduacao: ["Pós-Graduação", "pos graduacao", "pós graduação"]
 
-  # Departamentos e Diretorias (Siglas)
-  dco: ["Departamento de Computação", "departamento computação", "departamento computacao", "dco", "comp", "computacao"]
-  dta: ["Diretoria Técnica Acadêmica"]
-  dtad: ["Diretoria Técnica Administrativa"]
-  dti: ["Diretoria Técnica de Informática"]
-  dpsi: ["Departamento de Psicologia"]
-  def: ["Departamento de Educação Física"]
-  dfm: ["Departamento de Física e Meteorologia"]
-  psico: ["Departamento de Psicologia"]
-
-  # Seções (Siglas)
-  staepe: ["Seção Técnica de Apoio ao Ensino, Pesquisa e Extensão"]
-  stg: ["Seção Técnica de Graduação"]
-  stpg: ["Seção Técnica de Pós-Graduação", "pos graduacao"]
-  sta: ["Seção Técnica Acadêmica"]
-  saad: ["Seção de Apoio Administrativo"]
-  stf: ["Seção Técnica de Finanças"]
-  stm: ["Seção Técnica de Materiais"]
-  stgp: ["Seção Técnica de Gestão de Pessoas", "gestão de pessoas"]
+  # Departamentos e Diretorias
+  dco: ["Departamento de Computação", "departamento de computacao", "departamento computacao", "computacao", "comp", "DCO"]
+  dta: ["Diretoria Técnica Acadêmica", "DTA"]
+  dtad: ["Diretoria Técnica Administrativa", "DTAd", "DTAD"]
+  dti: ["Diretoria Técnica de Informática", "DTI", "dti fc", "diretoria tecnica de informatica", "servico tecnico de informatica", "sti"]
+  dpsi: ["Departamento de Psicologia", "DPSI"]
+  def: ["Departamento de Educação Física", "DEF"]
+  dfm: ["Departamento de Física e Meteorologia", "DFM"]
+  psico: ["Departamento de Psicologia", "Psicologia"]
+  stpg: ["Seção Técnica de Pós-Graduação", "STPG", "pos graduacao", "pós-graduação", "pos-graduação", "secretaria da pós-graduação"]
+  stg: ["Seção Técnica de Graduação", "STG"]
+  staepe: ["Seção Técnica de Apoio ao Ensino, Pesquisa e Extensão", "STAEPE"]
+  sta: ["Seção Técnica Acadêmica", "STA"]
+  stf: ["Seção Técnica de Finanças", "STF", "financeiro", "finanças"]
+  stm: ["Seção Técnica de Materiais", "STM"]
+  stgp: ["Seção Técnica de Gestão de Pessoas", "STGP", "gestao de pessoas", "gestão de pessoas", "recursos humanos", "rh fc"]
+  saad: ["Seção de Apoio Administrativo", "SAAD", "apoio administrativo", "secretaria de apoio administrativo"]
 
   # Laboratórios e Locais
-  ldc: ["Laboratório Didático Computacional", "laboratorio didatico computacional"]
-  lepec: ["Laboratório de Ensino, Pesquisa e Extensão em Computação"]
-  labsicc: ["Laboratório Didático dos Cursos de Bacharelado em Sistemas de Informação e Bacharelado em Ciência da Computação"]
-
-  # Pró-Reitorias e Coordenadorias
-  cope: ["Coordenadoria de Permanência Estudantil", "COPE"]
-  proex: ["Pró-Reitoria de Extensão Universitária"]
-  prograd: ["Pró-Reitoria de Graduação"]
-  prope: ["Pró-Reitoria de Pesquisa"]
-
-  # Outras Unidades
-  faac: ["Faculdade de Arquitetura, Artes e Comunicação", "FAAC"]
-  feb: ["Faculdade de Engenharia de Bauru", "FEB"]
-  fundeb: ["FUNDEB"]
+  ldc: ["Laboratório Didático Computacional", "laboratorio didatico computacional", "LDC", "laboratório didático de computação"]
+  lepec: ["Laboratório de Ensino, Pesquisa e Extensão em Computação", "LEPEC"]
+  labsicc: ["Laboratório Didático dos Cursos de BSI e BCC", "LABSICC"]
   ipmet: ["IPMET"]
 
-  # Serviços e Sistemas
-  impressao: ["Serviço de Impressão", "servico de impressao"]
-  voip: ["Telefonia VoIP"]
-  rh: ["Seção Técnica de Gestão de Pessoas", "STGP"]
-  compras: ["Seção Técnica de Materiais", "STM"]
-  financas: ["Seção Técnica de Finanças", "STF"]
+  # Pró-reitorias
+  cope: ["Coordenadoria de Permanência Estudantil", "COPE"]
+  proex: ["Pró-Reitoria de Extensão Universitária", "PROEX"]
+  prograd: ["Pró-Reitoria de Graduação", "PROGRAD"]
+  prope: ["Pró-Reitoria de Pesquisa", "PROPe"]
 
-  # Pessoas e docentes
+  # Serviços / Sistemas / Temas frequentes
+  impressao: ["Serviço de Impressão", "servico de impressao", "impressão", "impressao ldc", "impressao lepec"]
+  voip: ["Telefonia VoIP", "telefonia", "ramal"]
+  rh: ["Seção Técnica de Gestão de Pessoas", "STGP", "RH"]
+  compras: ["Seção Técnica de Materiais", "STM", "compras"]
+  financas: ["Seção Técnica de Finanças", "STF", "finanças"]
+
+  # Pessoas (docentes/gestores) — formas usuais
   andreia:
     - "Andreia Carla Gonçalves Vianna"
     - "Andreia Vianna"
@@ -169,51 +183,25 @@ synonyms:
     - "Simone das Graças Domingues Prado"
     - "Simone Domingues Prado"
     - "Simone Prado"
-  vianna:
-    - "Vianna"
-    - "Gonçalves Vianna"
-  prado:
-    - "Prado"
-    - "Domingues Prado"
+  vianna: ["Vianna", "Gonçalves Vianna"]
+  prado: ["Prado", "Domingues Prado"]
 
-  # Termos relacionados a contato
-  contato:
-    - "contato"
-    - "contatos"
-    - "dados de contato"
-    - "informacoes de contato"
-    - "ponto de contato"
-  telefone:
-    - "telefone"
-    - "tel"
-    - "telefone fixo"
-    - "numero de telefone"
-    - "telefone direto"
-  ramal:
-    - "ramal"
-    - "ramais"
-  celular:
-    - "celular"
-    - "numero de celular"
-    - "telefone celular"
-  whatsapp:
-    - "whatsapp"
-    - "whats"
+  # Intenções de contato
+  contato: ["contato", "contatos", "dados de contato", "informacoes de contato", "ponto de contato"]
+  telefone: ["telefone", "tel", "telefone fixo", "numero de telefone", "telefone direto"]
+  ramal: ["ramal", "ramais"]
+  celular: ["celular", "numero de celular", "telefone celular"]
+  whatsapp: ["whatsapp", "whats"]
+  email: ["e-mail", "email", "mail", "correio eletronico", "e mail"]
 
-  # Termos relacionados a e-mail
-  email:
-    - "e-mail"
-    - "email"
-    - "mail"
-    - "correio eletronico"
-    - "e mail"
+# ==============================================================================
+# 4) PALAVRAS-CHAVE (reforçam recall lexical)
+# ==============================================================================
 
-
-
-# Palavras-chave importantes que podem aparecer em buscas
 keywords:
   - "eduroam"
   - "papercut"
+  - "servicedesk"
   - "plotter"
   - "colação de grau"
   - "moradia estudantil"
@@ -229,6 +217,8 @@ keywords:
   - "anfiteatro"
   - "LDC"
   - "LEPEC"
+  - "agenda ldc"
+  - "pix"
   - "monitoria"
   - "cotas"
   - "créditos"
@@ -238,56 +228,120 @@ keywords:
   - "pesquisa"
   - "extensão"
 
-# Pesos opcionais por departamento para influenciar a relevância da busca
+# ==============================================================================
+# 5) BOOSTS (ajuste fino de priorização por slug)
+# Obs.: aplicado quando o slug é detectado na pergunta.
+# ==============================================================================
+
 boosts:
   department:
     computacao: 1.15
-    biologia: 1.10
-    psicologia: 1.05
+    matematica: 1.15
     fisica: 1.10
+    biologia: 1.10
     educacao: 1.10
     educacaofisica: 1.05
-    matematica: 1.15
-    quimica: 1.0
+    psicologia: 1.05
+    quimica: 1.00
+    dti: 1.10
+    stpg: 1.20
+    stgp: 1.15
+    stf: 1.10
+    saad: 1.05
+    ldc: 1.10
+    diretoria: 1.05
+    vice_diretoria: 1.05
 
-# Expansões personalizadas de multi-query por termo
+# ==============================================================================
+# 6) EXPANSÕES DE MULTI-QUERY (por termo observado na pergunta normalizada)
+# Dica: foque intents frequentes e queries curtas e objetivas.
+# ==============================================================================
+
 mq_expansions:
+  # --- Reserva / Anfiteatro / Pós (STPG) ---
   reserva:
     - "reserva anfiteatro stpg"
     - "email stpg reserva anfiteatro"
     - "solicitar sala pos graduacao stpg"
+    - "horarios reserva pos graduacao stpg"
   anfiteatro:
     - "anfiteatro pos graduacao stpg"
     - "reserva sala anfiteatro faculdade de ciencias"
     - "agendar anfiteatro fc bauru"
+    - "procedimento reserva anfiteatro stpg"
+
+  # --- Impressão LDC / LEPEC ---
   impressao:
     - "impressao ldc passo a passo"
     - "comprar cotas impressao ldc"
     - "envio arquivo impressao laboratorio didatico computacional"
+    - "cadastro sistema de impressao ldc"
+    - "politica reembolso impressao ldc"
   cota:
     - "cotas impressao pagamento pix"
     - "valor impressao frente verso ldc"
     - "tabela preco impressao faculdade ciencias"
+    - "cotas impressao link pagamento"
   ldc:
     - "laboratorio didatico computacional agenda"
     - "agendar uso ldc lepec"
     - "horario funcionamento lepec"
-  contato:
-    - "telefone secretaria faculdade ciencias"
-    - "email secretaria apoio administrativo"
-    - "ramal suporte ldc"
+    - "contato suporte ldc"
+  pix:
+    - "pagar cotas impressao pix"
+    - "link pagamento pix impressao ldc"
+  dti:
+    - "email dti fc"
+    - "contato dti faculdade ciencias"
+    - "secretaria dti fc"
+  redes:
+    - "email redes dti"
+    - "contato redes dti fc"
+  stgp:
+    - "telefone stgp faculdade ciencias"
+    - "email stgp recursos humanos"
+    - "ramal stgp"
+  stf:
+    - "telefone stf faculdade ciencias"
+    - "email stf financeiro fc"
+  saad:
+    - "email saad faculdade ciencias"
+    - "telefone saad fc"
+  diretoria:
+    - "telefone diretoria faculdade ciencias"
+    - "email diretoria fc"
+  vice_diretoria:
+    - "telefone vice diretoria faculdade ciencias"
+    - "email vice diretoria fc"
+  login:
+    - "login envio trabalhos impressao ldc"
+    - "portal impressao ldc enviar arquivo"
+  reembolso:
+    - "reembolso impressao enviada incorretamente"
+    - "politica devolucao cotas impressao"
+  valores:
+    - "tabela valores impressao preto e branco"
+    - "tabela valores impressao colorida"
+    - "preco impressao duplex ldc"
+
+  # --- Contatos frequentes (nomes) ---
   andreia:
     - "andreia carla goncalves vianna telefone"
     - "telefone 3103 9508 andreia vianna"
-    - "andreia vianna 3103-9508 telefone"
     - "contato andreia vianna departamento de computacao"
   andrea:
     - "andrea carla goncalves vianna telefone"
     - "telefone 3103 9508 andrea vianna"
-    - "andrea vianna 3103-9508 telefone"
     - "contato andrea vianna departamento de computacao"
   simone:
     - "simone das gracas domingues prado telefone"
     - "telefone 3103 9514 simone prado"
-    - "simone prado 3103-9514 telefone"
     - "contato simone prado departamento de computacao"
+
+  # --- Redes / eduroam (tópico recorrente de DTI) ---
+  eduroam:
+    - "procedimento configuracao eduroam unesp"
+    - "documentacao eduroam dti"
+    - "rede sem fio eduroam passo a passo"
+
+# EOF

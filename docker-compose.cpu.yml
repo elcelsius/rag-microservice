@@ -38,6 +38,11 @@ services:
       DATABASE_URL: "postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@ai_postgres:5432/${POSTGRES_DB}"
       REDIS_URL: ${REDIS_URL:-redis://ai_redis:6379/0}
       CACHE_TTL_SECONDS: ${CACHE_TTL_SECONDS:-43200}
+      RETRIEVAL_FETCH_K: ${RETRIEVAL_FETCH_K:-80}
+      RETRIEVAL_K: ${RETRIEVAL_K:-8}
+      RETRIEVAL_MMR_LAMBDA: ${RETRIEVAL_MMR_LAMBDA:-0.35}
+      RETRIEVAL_MMR_LAMBDA_SHORT: ${RETRIEVAL_MMR_LAMBDA_SHORT:-0.25}
+      RETRIEVAL_MIN_SCORE: ${RETRIEVAL_MIN_SCORE:-0.25}
     depends_on:
       ai_postgres:
         condition: service_healthy
@@ -68,6 +73,11 @@ services:
       TRANSFORMERS_NO_ADVISORY_WARNINGS: "1"
       REDIS_URL: ${REDIS_URL:-redis://ai_redis:6379/0}
       CACHE_TTL_SECONDS: ${CACHE_TTL_SECONDS:-43200}
+      RETRIEVAL_FETCH_K: ${RETRIEVAL_FETCH_K:-80}
+      RETRIEVAL_K: ${RETRIEVAL_K:-8}
+      RETRIEVAL_MMR_LAMBDA: ${RETRIEVAL_MMR_LAMBDA:-0.35}
+      RETRIEVAL_MMR_LAMBDA_SHORT: ${RETRIEVAL_MMR_LAMBDA_SHORT:-0.25}
+      RETRIEVAL_MIN_SCORE: ${RETRIEVAL_MIN_SCORE:-0.25}
     depends_on:
       ai_etl:
         condition: service_completed_successfully
@@ -92,8 +102,8 @@ services:
     image: redis:7-alpine
     container_name: ai_redis
     command: ["redis-server", "--save", "", "--appendonly", "no"]
-    ports:
-      - "${REDIS_PORT:-6379}:6379"
+    # ports:
+    #   - "${REDIS_PORT:-6379}:6379"
     restart: unless-stopped
 
   # Serviço da Interface Web (UI)
@@ -114,8 +124,6 @@ services:
 volumes:
   pgdata:
   vector_store:
-
-
 
 
 

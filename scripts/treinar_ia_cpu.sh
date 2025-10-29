@@ -8,6 +8,7 @@ LOADERS_DIR="${LOADERS_DIR:-./loaders}"
 
 echo "[treinar_ia_cpu] data=$DATA_DIR out=$OUT_DIR emb=$EMB exts=$EXTS loaders=$LOADERS_DIR"
 docker-compose -f docker-compose.cpu.yml build ai_etl
+docker-compose -f docker-compose.cpu.yml run --rm ai_etl python etl_orchestrator.py
 docker-compose -f docker-compose.cpu.yml run --rm -e EMBEDDINGS_MODEL="$EMB" ai_etl \
   python scripts/etl_build_index.py \
     --data "$DATA_DIR" \

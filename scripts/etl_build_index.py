@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 
 """
-ETL para índice FAISS do RAG.
+ETL para indice FAISS do RAG.
 
 - Varre ./data (recursivo) e lê arquivos suportados.
 - Suporta DOIS estilos de loader em ./loaders:
@@ -26,9 +26,9 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from typing import List, Callable, Dict, Tuple
 
-from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
 from langchain_community.embeddings import HuggingFaceEmbeddings
+from langchain.schema import Document
 
 # ----------------------------
 # Defaults via ENV (podem ser sobrescritos por flags)
@@ -191,6 +191,15 @@ def build_faiss(
     exts_csv: str,
     loaders_dir: str,
 ) -> None:
+    os.environ["CHUNK_SIZE"] = str(chunk_size)
+    os.environ["CHUNK_OVERLAP"] = str(chunk_overlap)
+
+    from etl_orchestrator import (
+        _chunk_document,
+        CHUNK_SIZE as EFFECTIVE_CHUNK_SIZE,
+        CHUNK_OVERLAP as EFFECTIVE_CHUNK_OVERLAP,
+    )
+
     exts = {"."+e.strip().lower() for e in exts_csv.split(",") if e.strip()}
     readers, loaders_load = _load_custom_loaders(loaders_dir)
 
@@ -198,37 +207,39 @@ def build_faiss(
     print(f"[ETL] exts={sorted(exts)} loaders_dir={loaders_dir}", flush=True)
     print(f"[ETL] readers={sorted(readers.keys()) or 'nenhum'} loaders_load={len(loaders_load)}", flush=True)
 
-    splitter = RecursiveCharacterTextSplitter(chunk_size=chunk_size, chunk_overlap=chunk_overlap)
-
     files = _walk_files(data_dir, exts)
     if not files:
         print(f"[ETL] Nenhum arquivo {sorted(exts)} encontrado em {data_dir}.", flush=True)
 
-    texts: List[str] = []
-    metas: List[dict] = []
+    docs: List[Document] = []
 
     for path in files:
         raw = _read_any(path, readers, loaders_load).strip()
         if not raw:
-            print(f"[ETL] Vazio/indecifrável: {path}", flush=True)
+            print(f"[ETL] Vazio/indecifravel: {path}", flush=True)
             continue
-        chunks = splitter.split_text(raw)
-        for i, ch in enumerate(chunks):
-            texts.append(ch)
-            metas.append({"source": path, "chunk": i + 1})
+        base_doc = Document(page_content=raw, metadata={"source": path})
+        chunk_docs = _chunk_document(base_doc)
+        if not chunk_docs:
+            continue
+        docs.extend(chunk_docs)
 
-    if not texts:
-        texts = ["Base sem documentos. Adicione arquivos em /app/data e recrie o índice."]
-        metas = [{"source": "dummy", "chunk": 1}]
-        print("[ETL] WARN: índice dummy criado (sem textos válidos).", flush=True)
+    if not docs:
+        docs = [Document(page_content="Base sem documentos. Adicione arquivos em /app/data e recrie o indice.", metadata={"source": "dummy", "chunk": 1})]
+        print("[ETL] WARN: indice dummy criado (sem textos validos).", flush=True)
+    else:
+        print(
+            f"[ETL] Chunking PT-BR em execucao (chunk_size={EFFECTIVE_CHUNK_SIZE}, overlap={EFFECTIVE_CHUNK_OVERLAP}).",
+            flush=True,
+        )
 
-    print(f"[ETL] Gerando embeddings com {emb_model} para {len(texts)} chunks ...", flush=True)
+    print(f"[ETL] Gerando embeddings com {emb_model} para {len(docs)} chunks ...", flush=True)
     embeddings = HuggingFaceEmbeddings(model_name=emb_model)
 
-    vs = FAISS.from_texts(texts=texts, embedding=embeddings, metadatas=metas)
+    vs = FAISS.from_documents(docs, embeddings)
     Path(out_dir).mkdir(parents=True, exist_ok=True)
     vs.save_local(out_dir)
-    print(f"[ETL] Índice FAISS salvo em: {out_dir}", flush=True)
+    print(f"[ETL] Indice FAISS salvo em: {out_dir}", flush=True)
 
 # ----------------------------
 # CLI
@@ -236,11 +247,11 @@ def build_faiss(
 def main() -> int:
     parser = argparse.ArgumentParser(description="ETL para FAISS (RAG).")
     parser.add_argument("--data", default=DEFAULT_DATA_DIR, help="pasta com documentos (default: ./data)")
-    parser.add_argument("--out", default=DEFAULT_OUT_DIR, help="pasta de saída do FAISS")
+    parser.add_argument("--out", default=DEFAULT_OUT_DIR, help="pasta de saida do FAISS")
     parser.add_argument("--embeddings", default=DEFAULT_EMB, help="modelo de embeddings HF")
-    parser.add_argument("--chunk-size", type=int, default=800)
-    parser.add_argument("--chunk-overlap", type=int, default=120)
-    parser.add_argument("--exts", default=DEFAULT_EXTS, help="extensões suportadas (ex: txt,md,pdf,docx[,csv,json])")
+    parser.add_argument("--chunk-size", type=int, default=300)
+    parser.add_argument("--chunk-overlap", type=int, default=60)
+    parser.add_argument("--exts", default=DEFAULT_EXTS, help="extensoes suportadas (ex: txt,md,pdf,docx[,csv,json])")
     parser.add_argument("--loaders", default=DEFAULT_LOADERS_DIR, help="pasta com loaders customizados")
     args = parser.parse_args()
 

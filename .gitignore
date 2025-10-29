@@ -1,5 +1,6 @@
 # Arquivo de senhas e configurações de ambiente
 .env
+.vscode/
 
 # Pasta com os dados brutos (documentos, código clonado, etc.)
 # Geralmente não versionamos os dados, apenas o código que os processa.
